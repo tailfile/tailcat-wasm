@@ -1,0 +1,48 @@
+{
+  "name": "@tailfile/tailcat-wasm",
+  "description": "Tailcat WASM streams with experimental browser WebRTC upgrades and DERP fallback",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "node": "./dist/node.js",
+      "default": "./dist/index.js"
+    },
+    "./assets/*": "./dist/*"
+  },
+  "files": [
+    "dist",
+    "src",
+    "scripts",
+    "index.html",
+    ".nojekyll",
+    "tests",
+    "patches",
+    "tsconfig.json",
+    "tsconfig.test.json",
+    "README.md",
+    "wasm"
+  ],
+  "scripts": {
+    "test": "tsx --test tests/*.test.ts",
+    "check": "tsc --noEmit && tsc -p tsconfig.test.json",
+    "test:demo": "node tests/demo.e2e.ts",
+    "test:coverage": "tsx --test --experimental-test-coverage --test-coverage-include='src/*.ts' tests/*.test.ts",
+    "build": "node scripts/build.ts",
+    "build:wasm": "node scripts/build-wasm.ts",
+    "prepack": "npm run build"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^24.0.0",
+    "tsx": "^4.23.13",
+    "typescript": "7.0.2"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

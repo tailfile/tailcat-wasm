@@ -1,0 +1,1376 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <meta
+      name="description"
+      content="Try encrypted browser-to-browser streams with Tailcat WASM. See WebRTC direct paths and DERP relay fallback live."
+    />
+    <title>Tailcat WASM · Browser demo</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font:
+          100%/1.5 -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+        color: light-dark(#202127, #f1f2f5);
+        background: light-dark(#f5f6f8, #111216);
+        --muted: light-dark(#606573, #abb0bd);
+        --surface: light-dark(#fff, #1c1e24);
+        --border: light-dark(#dddfe6, #373a46);
+        --blue: light-dark(#0758cf, #7ab4ff);
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+      }
+      main {
+        max-width: 62rem;
+        margin: auto;
+        padding: 3rem 1.5rem 2rem;
+      }
+      header {
+        margin-bottom: 2rem;
+      }
+      .eyebrow {
+        color: var(--blue);
+        font-size: 0.75rem;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+      }
+      .eyebrow span {
+        color: var(--muted);
+        margin-left: 0.6rem;
+        font-weight: 500;
+      }
+      h1 {
+        font-size: clamp(2rem, 5.4vw, 3rem);
+        line-height: 1.08;
+        letter-spacing: -0.04em;
+        margin: 0.9rem 0 1rem;
+      }
+      h2 {
+        display: flex;
+        gap: 0.65rem;
+        align-items: center;
+        font-size: 1.05rem;
+        line-height: 1.3;
+        letter-spacing: -0.015em;
+        margin: 0;
+      }
+      p {
+        margin: 0.9rem 0;
+      }
+      .intro {
+        color: var(--muted);
+        max-width: 37rem;
+      }
+      .setup {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1rem;
+      }
+      .card {
+        padding: 1.5rem;
+        border: 1px solid var(--border);
+        background: var(--surface);
+        border-radius: 1.25rem;
+        margin-bottom: 1rem;
+      }
+      .step {
+        display: inline-grid;
+        place-items: center;
+        border: 1px solid var(--border);
+        border-radius: 50%;
+        width: 1.65rem;
+        height: 1.65rem;
+        font-size: 0.8rem;
+        color: var(--muted);
+      }
+      .row,
+      .section-head,
+      .toggle-row {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+      }
+      .section-head {
+        justify-content: space-between;
+        flex-wrap: wrap;
+      }
+      .toggle-row {
+        justify-content: space-between;
+        flex-wrap: wrap;
+        border-top: 1px solid var(--border);
+        padding-top: 1rem;
+      }
+      .caption,
+      small,
+      footer {
+        color: var(--muted);
+        font-size: 0.8rem;
+        line-height: 1.5;
+      }
+      label {
+        display: block;
+        font-size: 0.85rem;
+        font-weight: 600;
+        margin: 1rem 0 0.4rem;
+      }
+      input,
+      textarea,
+      button {
+        font: inherit;
+      }
+      input:not([type="checkbox"]),
+      textarea {
+        display: block;
+        width: 100%;
+        min-width: 0;
+        padding: 0.7rem 0.85rem;
+        background: light-dark(#fbfcfe, #14161c);
+        color: inherit;
+        border: 1px solid var(--border);
+        border-radius: 0.6rem;
+      }
+      textarea {
+        resize: vertical;
+        font:
+          0.8rem/1.5 ui-monospace,
+          monospace;
+        margin-bottom: 0.75rem;
+        overflow-wrap: anywhere;
+      }
+      textarea:read-only {
+        color: var(--muted);
+      }
+      button {
+        min-height: 2.75rem;
+        padding: 0.6rem 1rem;
+        border: 1px solid var(--border);
+        border-radius: 0.65rem;
+        background: var(--surface);
+        color: inherit;
+        font-size: 0.85rem;
+        font-weight: 600;
+        cursor: pointer;
+        touch-action: manipulation;
+      }
+      button.primary {
+        background: #075bd8;
+        border-color: #075bd8;
+        color: white;
+      }
+      button:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+      button:active:not(:disabled) {
+        transform: scale(0.97);
+      }
+      :focus-visible {
+        outline: 3px solid var(--blue);
+        outline-offset: 3px;
+      }
+      details {
+        margin-top: 1rem;
+      }
+      #setup-panel {
+        margin: 0 0 1rem;
+      }
+      #setup-summary {
+        padding: 0.6rem 0.2rem;
+        font-size: 0.9rem;
+      }
+      summary {
+        color: var(--muted);
+        cursor: pointer;
+        font-size: 0.8rem;
+        padding: 0.3rem 0;
+      }
+      .badge {
+        padding: 0.35rem 0.7rem;
+        border-radius: 2rem;
+        font-size: 0.8rem;
+        font-weight: 650;
+        background: light-dark(#edf0f5, #2b2f39);
+      }
+      .badge[data-state="direct"] {
+        background: light-dark(#e4f5eb, #123e2d);
+        color: light-dark(#116234, #87e3af);
+      }
+      .badge[data-state="derp"],
+      .badge[data-state="webrtc-relay"] {
+        background: light-dark(#fff2d8, #45351c);
+        color: light-dark(#86510b, #f1c27b);
+      }
+      .metrics {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 1rem;
+        margin: 1.5rem 0;
+      }
+      .metrics span {
+        color: var(--muted);
+        font-size: 0.8rem;
+      }
+      .metrics strong {
+        display: block;
+        font-size: 1.2rem;
+        font-weight: 600;
+        letter-spacing: -0.025em;
+        font-variant-numeric: tabular-nums;
+        margin: 0.25rem 0;
+      }
+      .metrics small {
+        display: block;
+      }
+      .test-meters {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1.5rem;
+        margin: 1.25rem 0;
+      }
+      .test-meters span,
+      .test-meters small {
+        display: block;
+        color: var(--muted);
+      }
+      .test-meters strong {
+        display: block;
+        font-size: 1.6rem;
+        font-variant-numeric: tabular-nums;
+        margin: 0.4rem 0;
+      }
+      .test-meters progress {
+        display: block;
+        width: 100%;
+        height: 0.6rem;
+        margin-bottom: 0.6rem;
+        accent-color: var(--blue);
+      }
+      .metrics strong {
+        font-size: 1rem;
+        overflow-wrap: anywhere;
+      }
+      .toggle {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin: 0;
+        font-weight: 500;
+      }
+      input[type="checkbox"] {
+        width: 1.15rem;
+        height: 1.15rem;
+        accent-color: #075bd8;
+      }
+      .message-form {
+        margin-top: 1rem;
+      }
+      .message-form input {
+        flex: 1;
+      }
+      ol {
+        list-style: none;
+        padding: 0;
+        margin-bottom: 0;
+      }
+      li {
+        padding: 0.8rem 0;
+        border-bottom: 1px solid var(--border);
+        overflow-wrap: anywhere;
+        white-space: pre-wrap;
+      }
+      li:last-child {
+        border-bottom: 0;
+      }
+      li span {
+        display: block;
+        color: var(--muted);
+        font-size: 0.75rem;
+        margin-bottom: 0.2rem;
+      }
+      #error {
+        padding: 1rem;
+        border: 1px solid light-dark(#d75656, #b74c4c);
+        color: light-dark(#a91e27, #ff999d);
+        border-radius: 0.7rem;
+        overflow-wrap: anywhere;
+      }
+      #mode-note:empty {
+        display: none;
+      }
+      footer {
+        text-align: center;
+        padding: 0.5rem 1rem;
+      }
+      footer a {
+        color: var(--muted);
+      }
+      [hidden] {
+        display: none !important;
+      }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+      }
+      @media (max-width: 640px) {
+        main {
+          padding: 1.5rem 1rem;
+        }
+        .test-meters {
+          grid-template-columns: 1fr;
+          gap: 1rem;
+        }
+        .setup {
+          grid-template-columns: 1fr;
+          gap: 0;
+        }
+        .card {
+          padding: 1.15rem;
+        }
+        .metrics {
+          grid-template-columns: 1fr 1fr;
+        }
+        .metrics > :last-child {
+          grid-column: 1 / -1;
+        }
+        .section-head {
+          align-items: flex-start;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        button:active:not(:disabled) {
+          transform: none;
+        }
+      }
+      @media (prefers-contrast: more) {
+        :root {
+          --border: currentColor;
+          --muted: currentColor;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <p class="eyebrow">TAILCAT WASM <span>SDK DEMO</span></p>
+        <h1>Two browsers.<br />One encrypted connection.</h1>
+        <p class="intro">
+          Your address is prepared automatically. Open this page on another
+          device, paste either address, and connect.
+        </p>
+      </header>
+
+      <details id="setup-panel" open>
+        <summary id="setup-summary">Connection setup</summary>
+        <div class="setup">
+          <section class="card" aria-labelledby="local-heading">
+            <h2 id="local-heading"><span class="step">1</span> This browser</h2>
+            <p id="status" role="status">Preparing your temporary address…</p>
+            <div class="row">
+              <button id="start" class="primary" hidden>Start again</button>
+              <button id="stop" hidden>Stop</button>
+            </div>
+            <div id="local" hidden>
+              <label for="address">Your address</label>
+              <textarea
+                id="address"
+                rows="2"
+                readonly
+                spellcheck="false"
+                aria-describedby="address-help"
+              ></textarea>
+              <div class="row">
+                <button id="copy">Copy address</button
+                ><span id="copy-status" role="status"></span>
+              </div>
+              <p id="address-help" class="caption">
+                Share with the person you want to test with. Keys live only in
+                this tab.
+              </p>
+            </div>
+            <details id="settings">
+              <summary>Relay settings</summary>
+              <label for="map">DERP map URL</label>
+              <input
+                id="map"
+                type="url"
+                value="https://tailcat.dev/derpmap.json"
+                spellcheck="false"
+              />
+              <p class="caption">
+                Use the public Tailcat map or a CORS-enabled map for your relay.
+              </p>
+            </details>
+          </section>
+
+          <section class="card" aria-labelledby="peer-heading">
+            <h2 id="peer-heading">
+              <span class="step">2</span> Connect a browser
+            </h2>
+            <form id="connect-form">
+              <label for="peer-address">Their address</label>
+              <textarea
+                id="peer-address"
+                rows="3"
+                placeholder="Paste an address from the other browser"
+                maxlength="2048"
+                required
+                spellcheck="false"
+              ></textarea>
+              <div class="row">
+                <button id="connect" class="primary" disabled>Connect</button>
+                <button id="cancel" type="button" hidden>Cancel</button>
+              </div>
+            </form>
+            <p class="caption">
+              One connection carries messages in both directions. Either browser
+              can connect first.
+            </p>
+          </section>
+        </div>
+      </details>
+
+      <p id="error" role="alert" hidden></p>
+
+      <section class="card transport" aria-labelledby="transport-heading">
+        <div class="section-head">
+          <h2 id="transport-heading">Live transport</h2>
+          <div class="row">
+            <span id="route" class="badge" data-state="idle" role="status"
+              >No peer connected</span
+            >
+            <button id="disconnect" hidden>Disconnect</button>
+          </div>
+        </div>
+        <p id="route-detail" class="caption">
+          Connections start through DERP and attempt a WebRTC upgrade.
+        </p>
+        <div class="metrics">
+          <div>
+            <span>WebRTC upload / download</span
+            ><strong id="rtc-rate">—</strong> <small id="rtc-traffic">—</small
+            ><small>Total sent / received</small>
+          </div>
+          <div>
+            <span>DERP upload / download</span
+            ><strong id="derp-rate">—</strong> <small id="derp-traffic">—</small
+            ><small>Total sent / received</small>
+          </div>
+          <div>
+            <span>ICE round trip</span><strong id="rtt">—</strong
+            ><small id="candidates">No selected candidate pair</small>
+          </div>
+        </div>
+        <div class="toggle-row">
+          <label class="toggle"
+            ><input id="webrtc" type="checkbox" checked /> Allow WebRTC direct
+            paths</label
+          >
+          <span class="caption"
+            >Turn off to move an active stream to DERP.</span
+          >
+        </div>
+        <p id="mode-note" class="caption" role="status"></p>
+        <details id="webrtc-debug">
+          <summary>WebRTC debugging</summary>
+          <p class="caption">
+            Open Chrome’s diagnostics in another tab before connecting. Select
+            this demo’s PeerConnection, then inspect data-channel and
+            candidate-pair statistics. Regular DevTools Network shows DERP
+            WebSockets, not WebRTC DataChannel packets.
+          </p>
+          <label for="debug-address">Chrome diagnostics address</label>
+          <input
+            id="debug-address"
+            readonly
+            value="chrome://webrtc-internals"
+          />
+          <div class="row">
+            <button id="copy-debug">Copy debug page address</button
+            ><span id="debug-status" role="status"></span>
+          </div>
+          <p class="caption">
+            Paste it into the address bar of a new tab. Browser internal pages
+            cannot be opened reliably by ordinary web links.
+            <a
+              href="https://webrtc.org/support/bug-reporting"
+              target="_blank"
+              rel="noreferrer"
+              >WebRTC debugging guide</a
+            >
+          </p>
+        </details>
+      </section>
+
+      <section class="card" aria-labelledby="exchange-heading">
+        <div class="section-head">
+          <h2 id="exchange-heading">Try the connection</h2>
+          <div class="row">
+            <button id="probe" disabled>Send 1 GB test</button>
+            <button id="cancel-probe" hidden>Stop test</button>
+          </div>
+        </div>
+        <p id="probe-status" class="caption" role="status">
+          1 GB = 1,000,000,000 bytes. Sent in small chunks and verified by the
+          receiver.
+        </p>
+        <div class="test-meters">
+          <div id="send-meter" data-state="idle">
+            <span>Send · receiver-confirmed</span>
+            <strong id="send-rate">—</strong>
+            <progress
+              id="send-progress"
+              max="1000000000"
+              value="0"
+              aria-label="Receiver-confirmed test progress"
+            ></progress>
+            <small id="send-detail">Ready to send 1 GB</small>
+          </div>
+          <div id="receive-meter" data-state="idle">
+            <span>Receive</span>
+            <strong id="receive-rate">—</strong>
+            <progress
+              id="receive-progress"
+              max="1000000000"
+              value="0"
+              aria-label="Received test progress"
+            ></progress>
+            <small id="receive-detail">Waiting for a test</small>
+          </div>
+        </div>
+        <p class="caption">
+          Test speeds use received payload bytes over the last 2 seconds.
+          Transport speeds above count encrypted packets, including overhead and
+          retransmissions. Transport upload counts local sends, not confirmed
+          delivery.
+        </p>
+        <form id="message-form" class="row message-form">
+          <label class="sr-only" for="message">Message</label>
+          <input
+            id="message"
+            placeholder="Say hello to the other browser…"
+            maxlength="2000"
+            required
+            disabled
+          />
+          <button id="send" class="primary" disabled>Send</button>
+        </form>
+        <ol
+          id="messages"
+          aria-label="Conversation"
+          aria-live="polite"
+          aria-relevant="additions"
+        ></ol>
+        <p id="empty" class="caption">Messages appear here on both browsers.</p>
+      </section>
+
+      <footer>
+        <p>WireGuard encryption · WebRTC when available · DERP fallback</p>
+        <p class="caption">
+          Direct availability depends on both networks. Traffic counts include
+          encrypted protocol overhead. The final average includes streaming,
+          chunk verification, and the receiver’s completion receipt.
+        </p>
+        <a href="./dist/THIRD_PARTY_NOTICES.txt">Third-party notices</a>
+      </footer>
+    </main>
+    <script id="demo-protocol">
+      // Kept in its own block so the tests exercise the exact protocol served here.
+      const demoProtocol = (() => {
+        const TEST_BYTES = 1_000_000_000;
+        const CHUNK_BYTES = 256 * 1024;
+        const MAX_TEXT_BYTES = 16 * 1024;
+        const FRAME = {
+          TEXT: 1,
+          TEST_START: 2,
+          TEST_CHUNK: 3,
+          TEST_END: 4,
+          PROGRESS: 5,
+          RECEIPT: 6,
+          DISCONNECT: 7,
+        };
+        function validate(kind, size) {
+          if (!Object.values(FRAME).includes(kind))
+            throw new Error("Unknown demo message");
+          let limit = MAX_TEXT_BYTES;
+          if (kind === FRAME.TEST_CHUNK) limit = CHUNK_BYTES;
+          if (kind === FRAME.DISCONNECT) limit = 0;
+          if (size > limit)
+            throw new Error("Demo message exceeds its size limit");
+        }
+        async function writeFrame(connection, kind, bytes) {
+          validate(kind, bytes.byteLength);
+          const frame = new Uint8Array(5 + bytes.byteLength);
+          frame[0] = kind;
+          new DataView(frame.buffer).setUint32(1, bytes.byteLength);
+          frame.set(bytes, 5);
+          await connection.write(frame);
+        }
+        /** Bound every frame before allocating; a 1 GB test is many small frames. */
+        async function* readFrames(connection) {
+          let chunk = new Uint8Array();
+          let offset = 0;
+          async function exact(length, allowEOF = false) {
+            const result = new Uint8Array(length);
+            let filled = 0;
+            while (filled < length) {
+              if (offset === chunk.length) {
+                const next = await connection.read();
+                if (next === null) {
+                  if (allowEOF && filled === 0) return null;
+                  throw new Error("Connection ended inside a demo message");
+                }
+                if (!next.length) throw new Error("Empty stream read");
+                chunk = next;
+                offset = 0;
+              }
+              const count = Math.min(length - filled, chunk.length - offset);
+              result.set(chunk.subarray(offset, offset + count), filled);
+              offset += count;
+              filled += count;
+            }
+            return result;
+          }
+          for (;;) {
+            const header = await exact(5, true);
+            if (!header) return;
+            const kind = header[0];
+            const size = new DataView(header.buffer).getUint32(1);
+            validate(kind, size);
+            yield { kind, bytes: await exact(size) };
+          }
+        }
+        async function sha256(bytes) {
+          const digest = await crypto.subtle.digest("SHA-256", bytes);
+          return Array.from(new Uint8Array(digest), (byte) =>
+            byte.toString(16).padStart(2, "0"),
+          ).join("");
+        }
+        // Web Crypto hashes each bounded chunk. Hashing the ordered digests at
+        // the end verifies the whole sequence without buffering the entire test.
+        function testDigest(total = TEST_BYTES) {
+          const digests = new Uint8Array(Math.ceil(total / CHUNK_BYTES) * 32);
+          let received = 0;
+          let count = 0;
+          return {
+            async update(bytes) {
+              if (
+                !bytes.length ||
+                bytes.length !== Math.min(CHUNK_BYTES, total - received)
+              )
+                throw new Error("Unexpected test chunk size");
+              const digest = await crypto.subtle.digest("SHA-256", bytes);
+              digests.set(new Uint8Array(digest), count++ * 32);
+              received += bytes.length;
+              return received;
+            },
+            async finish() {
+              if (received !== total)
+                throw new Error("Incomplete test payload");
+              return sha256(digests);
+            },
+          };
+        }
+        function validateProgress(test, progress) {
+          if (
+            !test ||
+            progress.id !== test.id ||
+            !Number.isSafeInteger(progress.bytes) ||
+            progress.bytes < test.confirmed ||
+            progress.bytes > test.sent
+          )
+            throw new Error("Invalid test progress receipt");
+          return progress.bytes;
+        }
+        class RateMeter {
+          constructor(now, bytes = 0) {
+            this.samples = [{ time: now, bytes }];
+          }
+          sample(bytes, now) {
+            const last = this.samples.at(-1);
+            if (bytes < last.bytes || now < last.time) {
+              this.samples = [{ time: now, bytes }];
+              return 0;
+            }
+            if (now > last.time) this.samples.push({ time: now, bytes });
+            while (
+              this.samples.length > 2 &&
+              this.samples[1].time <= now - 2000
+            )
+              this.samples.shift();
+            const first = this.samples[0];
+            return now > first.time
+              ? ((bytes - first.bytes) * 1000) / (now - first.time)
+              : 0;
+          }
+        }
+        return {
+          FRAME,
+          TEST_BYTES,
+          CHUNK_BYTES,
+          readFrames,
+          writeFrame,
+          sha256,
+          testDigest,
+          validateProgress,
+          RateMeter,
+        };
+      })();
+    </script>
+    <script type="module">
+      import { createTailcat } from "./dist/index.js";
+      const {
+        FRAME,
+        TEST_BYTES,
+        CHUNK_BYTES,
+        readFrames,
+        writeFrame,
+        testDigest,
+        validateProgress,
+        RateMeter,
+      } = demoProtocol;
+      function element(id) {
+        const node = document.getElementById(id);
+        if (!node) throw new Error(`Missing element: ${id}`);
+        return node;
+      }
+      const ui = {
+        setup: element("setup-panel"),
+        setupSummary: element("setup-summary"),
+        start: element("start"),
+        stop: element("stop"),
+        status: element("status"),
+        local: element("local"),
+        address: element("address"),
+        copy: element("copy"),
+        copyStatus: element("copy-status"),
+        map: element("map"),
+        peer: element("peer-address"),
+        connectForm: element("connect-form"),
+        connect: element("connect"),
+        disconnect: element("disconnect"),
+        cancel: element("cancel"),
+        error: element("error"),
+        route: element("route"),
+        routeDetail: element("route-detail"),
+        rtcTraffic: element("rtc-traffic"),
+        rtcRate: element("rtc-rate"),
+        derpRate: element("derp-rate"),
+        derpTraffic: element("derp-traffic"),
+        rtt: element("rtt"),
+        candidates: element("candidates"),
+        webrtc: element("webrtc"),
+        modeNote: element("mode-note"),
+        probe: element("probe"),
+        cancelProbe: element("cancel-probe"),
+        probeStatus: element("probe-status"),
+        messageForm: element("message-form"),
+        message: element("message"),
+        send: element("send"),
+        messages: element("messages"),
+        empty: element("empty"),
+      };
+      const PORT = 7443;
+      const encoder = new TextEncoder();
+      const decoder = new TextDecoder("utf-8", { fatal: true });
+
+      let runtime;
+      let lifetime;
+      let dialing;
+      let link;
+      let generation = 0;
+      let starting = false;
+      let peers = [];
+      let mapURL = "";
+      let sentTest;
+      let receivedTest;
+      const requestedMap = new URL(location.href).searchParams.get("map");
+      if (requestedMap) ui.map.value = requestedMap;
+
+      function newTest(id) {
+        const started = performance.now();
+        return {
+          id,
+          started,
+          meter: new RateMeter(started),
+          sent: 0,
+          confirmed: 0,
+          state: "pending",
+          lastProgress: started,
+        };
+      }
+      function paintTest(prefix, test) {
+        const node = element(prefix + "-meter");
+        node.dataset.state = test?.state ?? "idle";
+        node.dataset.bytes = String(test?.confirmed ?? 0);
+        node.dataset.sent = String(test?.sent ?? 0);
+        node.dataset.elapsedMs = String(test?.elapsed ?? 0);
+        node.dataset.averageBps = String(test?.average ?? 0);
+        element(prefix + "-progress").value = test?.confirmed ?? 0;
+        const speed = element(prefix + "-rate");
+        const detail = element(prefix + "-detail");
+        if (!test) {
+          speed.textContent = "—";
+          detail.textContent =
+            prefix === "send" ? "Ready to send 1 GB" : "Waiting for a test";
+          return;
+        }
+        speed.textContent = rate(
+          test.state === "done" ? test.average : test.speed,
+        );
+        let status = `${Math.floor((test.confirmed / TEST_BYTES) * 100)}%`;
+        if (test.state === "done")
+          status = `verified · ${(test.elapsed / 1000).toFixed(2)} s · average`;
+        else if (test.state === "error") status = "stopped";
+        detail.textContent = `${bytes(test.confirmed)} / 1 GB · ${status}`;
+      }
+      function finishTest(test) {
+        test.elapsed = performance.now() - test.started;
+        test.average = (test.confirmed * 1000) / test.elapsed;
+        test.state = "done";
+      }
+      function sampleRates() {
+        const now = performance.now();
+        for (const test of [sentTest, receivedTest])
+          if (test?.state === "pending")
+            test.speed = test.meter.sample(test.confirmed, now);
+        const path = peers.find(
+          (peer) => peer.peerNodeKey === link?.connection.peerNodeKey,
+        );
+        for (const key of [
+          "txBytes",
+          "rxBytes",
+          "derpTxBytes",
+          "derpRxBytes",
+        ]) {
+          if (!link || path?.[key] === undefined) continue;
+          if (!link.rates[key]) {
+            // Existing counters may include earlier streams; use a fresh baseline.
+            const meter = new RateMeter(now, path[key]);
+            link.rates[key] = { meter, value: 0 };
+          } else {
+            const sample = link.rates[key];
+            sample.value = sample.meter.sample(path[key], now);
+          }
+        }
+        render();
+      }
+
+      function errorMessage(error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+      function showError(error) {
+        ui.error.hidden = error === undefined;
+        ui.error.textContent = error === undefined ? "" : errorMessage(error);
+      }
+      function log(who, text) {
+        const item = document.createElement("li");
+        const label = document.createElement("span");
+        label.textContent = who;
+        item.append(label, document.createTextNode(text));
+        ui.messages.append(item);
+        while (ui.messages.children.length > 40)
+          ui.messages.firstElementChild.remove();
+        ui.empty.hidden = true;
+      }
+      function bytes(value) {
+        if (value === undefined) return "—";
+        if (value < 1000) return `${Math.round(value)} B`;
+        if (value < 1e6) return `${(value / 1000).toFixed(1)} kB`;
+        if (value < 1e9) return `${(value / 1e6).toFixed(2)} MB`;
+        return `${(value / 1e9).toFixed(2)} GB`;
+      }
+      function rate(value) {
+        return value === undefined ? "—" : `${bytes(value)}/s`;
+      }
+      function render() {
+        const listening = !!ui.address.value;
+        ui.start.hidden = starting || listening;
+        ui.stop.hidden = !starting && !listening;
+        ui.map.disabled = starting || listening;
+        ui.local.hidden = !listening;
+        ui.connect.disabled = !listening || !!link || !!dialing;
+        ui.peer.disabled = !!link || !!dialing;
+        ui.connect.textContent = dialing ? "Connecting…" : "Connect";
+        ui.cancel.hidden = !dialing;
+        ui.disconnect.hidden = !link;
+        ui.setupSummary.textContent = link
+          ? "Connected · addresses and relay settings"
+          : "Connection setup";
+        ui.send.disabled = !link || !!link.sending;
+        ui.message.disabled = !link;
+        ui.probe.disabled = !link || !!link.testing;
+        ui.probe.textContent = link?.testing ? "Testing…" : "Send 1 GB test";
+        ui.cancelProbe.hidden = !link?.testing && !link?.incoming;
+        ui.status.textContent = starting
+          ? "Loading WASM and starting the listener…"
+          : listening
+            ? "Ready. Waiting for a browser or an address to connect."
+            : "Listener stopped. Start again to prepare an address.";
+        if (link)
+          ui.status.textContent = "Connected. Send from either browser.";
+        const path = peers.find(
+          (peer) => peer.peerNodeKey === link?.connection.peerNodeKey,
+        );
+        const state = link ? (path?.state ?? "derp") : "idle";
+        const labels = {
+          direct: "Direct · WebRTC",
+          "webrtc-relay": "Relay · WebRTC TURN",
+          derp: "Relay · DERP",
+          connecting: "Checking WebRTC path…",
+          idle: "No peer connected",
+        };
+        ui.route.textContent = labels[state];
+        ui.route.dataset.state = state;
+        ui.routeDetail.textContent =
+          state === "direct"
+            ? "The selected ICE pair connects these browsers directly. DERP remains available for fallback."
+            : state === "webrtc-relay"
+              ? "The selected ICE pair uses a TURN relay."
+              : state === "derp"
+                ? "This stream currently uses DERP. Direct availability depends on both networks and WebRTC settings."
+                : "Connections start through DERP and attempt a WebRTC upgrade.";
+        const trafficRate = (key) => rate(link?.rates[key]?.value);
+        ui.rtcRate.textContent = `${trafficRate("txBytes")} / ${trafficRate("rxBytes")}`;
+        ui.derpRate.textContent = `${trafficRate("derpTxBytes")} / ${trafficRate("derpRxBytes")}`;
+        paintTest("send", sentTest);
+        paintTest("receive", receivedTest);
+        ui.rtcTraffic.dataset.txBytes = String(path?.txBytes ?? 0);
+        ui.rtcTraffic.dataset.rxBytes = String(path?.rxBytes ?? 0);
+        ui.derpTraffic.dataset.txBytes = String(path?.derpTxBytes ?? 0);
+        ui.derpTraffic.dataset.rxBytes = String(path?.derpRxBytes ?? 0);
+        ui.rtcTraffic.textContent = `${bytes(path?.txBytes)} / ${bytes(path?.rxBytes)}`;
+        ui.derpTraffic.textContent = `${bytes(path?.derpTxBytes)} / ${bytes(path?.derpRxBytes)}`;
+        const rtcActive = state === "direct" || state === "webrtc-relay";
+        ui.rtt.textContent =
+          !rtcActive || path?.rttMS === undefined
+            ? "—"
+            : path.rttMS < 1
+              ? "<1 ms"
+              : `${path.rttMS.toFixed(0)} ms`;
+        ui.candidates.textContent =
+          rtcActive && path?.localCandidateType && path.remoteCandidateType
+            ? `${path.localCandidateType} ↔ ${path.remoteCandidateType} · ${path.candidateProtocol ?? "ICE"}`
+            : "No selected candidate pair";
+      }
+
+      function disconnect(notifyPeer = true) {
+        dialing?.abort(new Error("Connection canceled"));
+        dialing = undefined;
+        const previous = link;
+        link = undefined;
+        if (previous) {
+          ui.setup.open = true;
+          previous.receipt?.reject(new Error("Connection closed during test"));
+          for (const test of [sentTest, receivedTest])
+            if (test?.state === "pending") {
+              test.state = "error";
+              test.speed = 0;
+            }
+          // Give the peer an explicit stop frame and FIN before retiring Tailcat.
+          // A stalled write must still release the connection within one second.
+          const close = () => {
+            void previous.connection.close().catch(() => {});
+          };
+          setTimeout(close, 1000);
+          void previous.writes
+            .then(async () => {
+              if (notifyPeer)
+                await writeFrame(
+                  previous.connection,
+                  FRAME.DISCONNECT,
+                  new Uint8Array(),
+                );
+              await previous.connection.closeWrite();
+            })
+            .catch(close);
+        }
+        render();
+      }
+      function stop() {
+        generation++;
+        disconnect();
+        lifetime?.abort();
+        lifetime = undefined;
+        runtime?.close();
+        runtime = undefined;
+        starting = false;
+        peers = [];
+        ui.address.value = "";
+        ui.copyStatus.textContent = "";
+        ui.modeNote.textContent = "";
+        render();
+      }
+      function write(current, kind, data) {
+        const next = current.writes.then(() => {
+          if (link !== current) throw new Error("Connection closed");
+          return writeFrame(current.connection, kind, data);
+        });
+        current.writes = next.catch(() => {});
+        return next;
+      }
+      const control = (current, kind, data) =>
+        write(current, kind, encoder.encode(JSON.stringify(data)));
+      async function receive(current) {
+        try {
+          for await (const frame of readFrames(current.connection)) {
+            if (link !== current) return;
+            if (frame.kind === FRAME.DISCONNECT) break;
+            if (frame.kind === FRAME.TEXT) {
+              log("Peer", decoder.decode(frame.bytes));
+              continue;
+            }
+            if (frame.kind === FRAME.TEST_CHUNK) {
+              const incoming = current.incoming;
+              if (!incoming)
+                throw new Error("Test data arrived without a start");
+              incoming.confirmed = await incoming.digest.update(frame.bytes);
+              if (link !== current) return;
+              const now = performance.now();
+              if (
+                incoming.confirmed - incoming.acknowledged >= 1024 * 1024 ||
+                now - incoming.lastProgress >= 200 ||
+                incoming.confirmed === TEST_BYTES
+              ) {
+                incoming.lastProgress = now;
+                incoming.acknowledged = incoming.confirmed;
+                await control(current, FRAME.PROGRESS, {
+                  id: incoming.id,
+                  bytes: incoming.confirmed,
+                });
+              }
+              continue;
+            }
+            const data = JSON.parse(decoder.decode(frame.bytes));
+            if (!data || typeof data !== "object")
+              throw new Error("Invalid demo control message");
+            if (frame.kind === FRAME.TEST_START) {
+              if (
+                current.incoming ||
+                data.bytes !== TEST_BYTES ||
+                typeof data.id !== "string" ||
+                data.id.length > 64 ||
+                !data.id
+              )
+                throw new Error("Invalid test start");
+              receivedTest = current.incoming = {
+                ...newTest(data.id),
+                digest: testDigest(),
+                acknowledged: 0,
+              };
+              render();
+            } else if (frame.kind === FRAME.TEST_END) {
+              const incoming = current.incoming;
+              if (
+                !incoming ||
+                data.id !== incoming.id ||
+                data.sha256 !== (await incoming.digest.finish())
+              )
+                throw new Error("Test checksum mismatch");
+              await control(current, FRAME.RECEIPT, {
+                id: incoming.id,
+                bytes: incoming.confirmed,
+                sha256: data.sha256,
+              });
+              if (link !== current) return;
+              finishTest(incoming);
+              current.incoming = undefined;
+              log(
+                "Received test",
+                `Verified 1 GB · ${rate(incoming.average)} average · SHA-256 chunk verification`,
+              );
+              render();
+            } else {
+              const pending = current.receipt;
+              const confirmed = validateProgress(pending, data);
+              if (confirmed > pending.confirmed)
+                pending.lastProgress = performance.now();
+              pending.confirmed = confirmed;
+              if (frame.kind === FRAME.RECEIPT) {
+                if (
+                  data.bytes !== TEST_BYTES ||
+                  !pending.expected ||
+                  data.sha256 !== pending.expected
+                )
+                  throw new Error("Test receipt did not match the sent bytes");
+                pending.resolve();
+              }
+            }
+          }
+          if (link === current)
+            log("Connection", "The other browser disconnected.");
+        } catch (error) {
+          if (link === current) showError(error);
+        } finally {
+          if (link === current) disconnect(false);
+        }
+      }
+      function attach(connection) {
+        if (link || connection.port !== PORT) {
+          void connection.close().catch(() => {});
+          return;
+        }
+        link = {
+          connection,
+          writes: Promise.resolve(),
+          rates: {},
+          testing: false,
+          sending: false,
+        };
+        sentTest = receivedTest = undefined;
+        ui.setup.open = false;
+        showError();
+        ui.probeStatus.textContent =
+          "1 GB = 1,000,000,000 bytes. Sent in small chunks and verified by the receiver.";
+        render();
+        ui.message.focus();
+        log(
+          "Connection",
+          "Connected. Messages and tests use this same stream.",
+        );
+        void receive(link);
+      }
+
+      async function start() {
+        if (starting || runtime) return;
+        showError();
+        if (!globalThis.isSecureContext || !globalThis.crypto?.subtle) {
+          showError("Open this demo over HTTPS or localhost.");
+          return;
+        }
+        try {
+          const url = new URL(ui.map.value.trim(), location.href);
+          if (!["http:", "https:"].includes(url.protocol))
+            throw new Error("Use an HTTP(S) DERP map URL");
+          mapURL = url.href;
+        } catch (error) {
+          showError(error);
+          return;
+        }
+        const token = ++generation;
+        lifetime = new AbortController();
+        starting = true;
+        render();
+        try {
+          const created = await createTailcat({
+            signal: lifetime.signal,
+            webRTC: ui.webrtc.checked ? {} : false,
+            onConnection(connection) {
+              if (generation !== token || dialing)
+                void connection.close().catch(() => {});
+              else attach(connection);
+            },
+            onTransportChange(value) {
+              if (generation === token) {
+                peers = value;
+                render();
+              }
+            },
+            onError(error) {
+              if (generation === token) {
+                stop();
+                showError(error);
+              }
+            },
+          });
+          if (generation !== token) {
+            created.close();
+            return;
+          }
+          runtime = created;
+          // A checkbox change during WASM startup applies to this first listener too.
+          runtime.setWebRTCEnabled(ui.webrtc.checked);
+          const identity = await runtime.listenWithIdentity(mapURL);
+          if (generation !== token) return;
+          ui.address.value = identity.address;
+          starting = false;
+          render();
+        } catch (error) {
+          if (generation === token) {
+            stop();
+            showError(error);
+          }
+        }
+      }
+      ui.start.addEventListener("click", start);
+      ui.stop.addEventListener("click", stop);
+      ui.disconnect.addEventListener("click", () => disconnect());
+      ui.cancel.addEventListener("click", () => disconnect());
+      window.addEventListener("pagehide", stop);
+      ui.copy.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(ui.address.value);
+          ui.copyStatus.textContent = "Copied";
+        } catch {
+          ui.address.focus();
+          ui.address.select();
+          ui.copyStatus.textContent = "Select and copy this address.";
+        }
+      });
+      ui.connectForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (!runtime || !ui.address.value || link || dialing) return;
+        showError();
+        const controller = (dialing = new AbortController());
+        render();
+        try {
+          const connection = await runtime.dial(ui.peer.value.trim(), mapURL, {
+            port: PORT,
+            signal: AbortSignal.any([
+              controller.signal,
+              AbortSignal.timeout(60_000),
+            ]),
+          });
+          if (dialing !== controller) {
+            await connection.close();
+            return;
+          }
+          dialing = undefined;
+          attach(connection);
+        } catch (error) {
+          if (dialing === controller) showError(error);
+        } finally {
+          if (dialing === controller) dialing = undefined;
+          render();
+        }
+      });
+      ui.webrtc.addEventListener("change", () => {
+        runtime?.setWebRTCEnabled(ui.webrtc.checked);
+        ui.modeNote.textContent =
+          ui.webrtc.checked && link
+            ? "WebRTC is enabled for new connections. Disconnect and reconnect to try upgrading again."
+            : !ui.webrtc.checked
+              ? "WebRTC is off. Streams use DERP."
+              : "";
+        render();
+      });
+      ui.messageForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const current = link;
+        const text = ui.message.value.trim();
+        if (!current || current.sending || !text) return;
+        current.sending = true;
+        render();
+        try {
+          await write(current, FRAME.TEXT, encoder.encode(text));
+          if (link !== current) return;
+          log("You", text);
+          if (ui.message.value.trim() === text) ui.message.value = "";
+        } catch (error) {
+          if (link === current) {
+            showError(error);
+            disconnect();
+          }
+        } finally {
+          current.sending = false;
+          render();
+        }
+      });
+      ui.probe.addEventListener("click", async () => {
+        const current = link;
+        if (!current || current.testing) return;
+        current.testing = true;
+        sentTest = newTest(crypto.randomUUID());
+        const pending = sentTest;
+        ui.probeStatus.textContent =
+          "Sending 1 GB · speed follows receiver confirmations";
+        showError();
+        render();
+        let timer;
+        try {
+          const receipt = new Promise((resolve, reject) => {
+            current.receipt = Object.assign(pending, { resolve, reject });
+            timer = setInterval(() => {
+              if (performance.now() - pending.lastProgress > 30_000)
+                reject(new Error("No receiver progress for 30 seconds"));
+            }, 1000);
+          });
+          const transmit = async () => {
+            const digest = testDigest();
+            await control(current, FRAME.TEST_START, {
+              id: pending.id,
+              bytes: TEST_BYTES,
+            });
+            const buffer = new Uint8Array(CHUNK_BYTES);
+            while (pending.sent < TEST_BYTES) {
+              if (link !== current)
+                throw new Error("Connection closed during test");
+              const chunk = buffer.subarray(
+                0,
+                Math.min(CHUNK_BYTES, TEST_BYTES - pending.sent),
+              );
+              for (let offset = 0; offset < chunk.length; offset += 65536)
+                crypto.getRandomValues(chunk.subarray(offset, offset + 65536));
+              // Progress can arrive before the local write promise settles.
+              pending.sent += chunk.length;
+              await Promise.all([
+                digest.update(chunk),
+                write(current, FRAME.TEST_CHUNK, chunk),
+              ]);
+            }
+            pending.expected = await digest.finish();
+            await control(current, FRAME.TEST_END, {
+              id: pending.id,
+              sha256: pending.expected,
+            });
+          };
+          await Promise.all([receipt, transmit()]);
+          if (link === current) {
+            finishTest(pending);
+            const result = `Verified 1 GB · ${rate(pending.average)} average · ${(pending.elapsed / 1000).toFixed(2)} s including receipt`;
+            ui.probeStatus.textContent = result;
+            log(
+              "Sent test",
+              `${result}\nSHA-256 chunk verification: ${pending.expected}`,
+            );
+          }
+        } catch (error) {
+          pending.state = "error";
+          pending.speed = 0;
+          if (link === current) {
+            ui.probeStatus.textContent = "Test did not complete.";
+            showError(error);
+            disconnect();
+          }
+        } finally {
+          clearInterval(timer);
+          current.receipt = undefined;
+          current.testing = false;
+          render();
+        }
+      });
+      element("copy-debug").addEventListener("click", async () => {
+        const address = element("debug-address");
+        try {
+          await navigator.clipboard.writeText(address.value);
+          element("debug-status").textContent =
+            "Copied · paste into a new tab’s address bar";
+        } catch {
+          address.focus();
+          address.select();
+          element("debug-status").textContent = "Select and copy the address";
+        }
+      });
+      ui.cancelProbe.addEventListener("click", () => disconnect());
+      setInterval(sampleRates, 250);
+      window.addEventListener("pageshow", (event) => {
+        if (event.persisted) void start();
+      });
+      void start();
+      render();
+    </script>
+  </body>
+</html>

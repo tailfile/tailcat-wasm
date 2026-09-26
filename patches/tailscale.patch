@@ -1,0 +1,241 @@
+--- a/wgengine/magicsock/magicsock.go
++++ b/wgengine/magicsock/magicsock.go
+@@ -211,6 +211,11 @@
+ 	// It must have buffer size > 0; see issue 3736.
+ 	derpRecvCh chan derpReadResult
+ 
++	// packetPaths carries already encrypted WireGuard packets over an embedding's
++	// authenticated transport. Both fields are guarded by mu except the channel.
++	packetPaths    map[key.NodePublic]*PacketPath
++	packetPathRecv chan packetPathRead
++
+ 	// bind is the wireguard-go conn.Bind for Conn.
+ 	bind *connBind
+ 
+@@ -579,14 +584,16 @@
+ func newConn(logf logger.Logf) *Conn {
+ 	discoPrivate := key.NewDisco()
+ 	c := &Conn{
+-		logf:          logf,
+-		derpRecvCh:    make(chan derpReadResult, 1), // must be buffered, see issue 3736
+-		derpStarted:   make(chan struct{}),
+-		peerLastDerp:  make(map[key.NodePublic]tailcfg.DERPRegionID),
+-		peerMap:       newPeerMap(),
+-		discoInfo:     make(map[key.DiscoPublic]*discoInfo),
+-		cloudInfo:     cloudinfo.New(logf),
+-		initializedAt: mono.Now(),
++		logf:           logf,
++		derpRecvCh:     make(chan derpReadResult, 1), // must be buffered, see issue 3736
++		packetPaths:    make(map[key.NodePublic]*PacketPath),
++		packetPathRecv: make(chan packetPathRead, 64),
++		derpStarted:    make(chan struct{}),
++		peerLastDerp:   make(map[key.NodePublic]tailcfg.DERPRegionID),
++		peerMap:        newPeerMap(),
++		discoInfo:      make(map[key.DiscoPublic]*discoInfo),
++		cloudInfo:      cloudinfo.New(logf),
++		initializedAt:  mono.Now(),
+ 	}
+ 	c.discoAtomic.Set(discoPrivate)
+ 	c.bind = &connBind{Conn: c, closed: true}
+@@ -3473,6 +3480,7 @@
+ 	if runtime.GOOS == "js" {
+ 		fns = []conn.ReceiveFunc{c.receiveDERP}
+ 	}
++	fns = append(fns, c.receivePacketPath)
+ 	// TODO: Combine receiveIPv4 and receiveIPv6 and receiveIP into a single
+ 	// closure that closes over a *RebindingUDPConn?
+ 	return fns, c.LocalPort(), nil
+@@ -3509,6 +3517,10 @@
+ 	// which will then check connBind.Closed.
+ 	// connBind.Closed takes c.mu, but c.derpRecvCh is buffered.
+ 	c.derpRecvCh <- derpReadResult{}
++	select {
++	case c.packetPathRecv <- packetPathRead{}:
++	default:
++	}
+ 	return nil
+ }
+ 
+--- a/wgengine/magicsock/endpoint.go
++++ b/wgengine/magicsock/endpoint.go
+@@ -76,7 +76,8 @@
+ 	// It is safe to load and read the contents of the value, but the caller
+ 	// must not store directly into this field. Instead, use
+ 	// [updateDiscoKey] and [updateTSMPDiscoKey].
+-	disco atomic.Pointer[endpointDisco]
++	disco          atomic.Pointer[endpointDisco]
++	packetCounters packetCounters
+ 
+ 	// mu protects all following fields.
+ 	mu syncs.Mutex // Lock ordering: Conn.mu, then endpoint.mu
+@@ -1122,6 +1123,13 @@
+ 	de.lastSendAny = now
+ 	de.mu.Unlock()
+ 
++	// The embedding may offer an authenticated datagram path (e.g. WebRTC).
++	// A closed or full path leaves the remaining packets on the ordinary path.
++	buffs = buffs[de.c.sendPacketPath(de.publicKey, buffs, offset):]
++	if len(buffs) == 0 {
++		return nil
++	}
++
+ 	if !udpAddr.ap.IsValid() && !derpAddr.IsValid() {
+ 		// Make a last ditch effort to see if we have a DERP route for them. If
+ 		// they contacted us over DERP and we don't know their UDP endpoints or
+--- a/wgengine/magicsock/derp.go
++++ b/wgengine/magicsock/derp.go
+@@ -703,6 +703,12 @@
+ 			} else if !wr.isDisco {
+ 				c.metrics.outboundPacketsDERPTotal.Add(1)
+ 				c.metrics.outboundBytesDERPTotal.Add(int64(len(wr.b)))
++				c.mu.Lock()
++				ep, ok := c.peerMap.endpointForNodeKey(wr.pubKey)
++				c.mu.Unlock()
++				if ok {
++					ep.packetCounters.derpTxBytes.Add(uint64(len(wr.b)))
++				}
+ 			}
+ 		}
+ 	}
+@@ -766,6 +772,7 @@
+ 		return 0, nil
+ 	}
+ 
++	ep.packetCounters.derpRxBytes.Add(uint64(n))
+ 	ep.noteRecvActivity(srcAddr, mono.Now())
+ 	if update := c.connCounter.Load(); update != nil {
+ 		update(0, netip.AddrPortFrom(ep.nodeAddr, 0), srcAddr.ap, 1, dm.n, true)
+--- /dev/null
++++ b/wgengine/magicsock/packetpath.go
+@@ -0,0 +1,131 @@
++// Copyright (c) Tailfile contributors
++// SPDX-License-Identifier: BSD-3-Clause
++
++package magicsock
++
++import (
++	"net"
++	"sync/atomic"
++
++	"github.com/tailscale/wireguard-go/conn"
++	"tailscale.com/types/key"
++)
++
++// PacketPath is an embedding-supplied path for encrypted WireGuard datagrams.
++// The embedding binds its transport to peer using authenticated signaling.
++// WireGuard still authenticates every received packet. It is never plaintext.
++type PacketPath struct {
++	c    *Conn
++	peer key.NodePublic
++	send func([]byte) bool
++}
++
++type packetPathRead struct {
++	path   *PacketPath
++	packet []byte
++}
++
++// NewPacketPath replaces the optional path for peer. send must be nonblocking,
++// copy borrowed bytes before returning, and return false when unavailable/full.
++func (c *Conn) NewPacketPath(peer key.NodePublic, send func([]byte) bool) *PacketPath {
++	p := &PacketPath{c: c, peer: peer, send: send}
++	c.mu.Lock()
++	if !c.closed {
++		c.packetPaths[peer] = p
++	}
++	c.mu.Unlock()
++	return p
++}
++
++// Close only removes this generation; an old session cannot remove a new path.
++func (p *PacketPath) Close() {
++	p.c.mu.Lock()
++	if p.c.packetPaths[p.peer] == p {
++		delete(p.c.packetPaths, p.peer)
++	}
++	p.c.mu.Unlock()
++}
++
++// Receive copies and queues a datagram, dropping on overload like a UDP socket.
++func (p *PacketPath) Receive(packet []byte) bool {
++	if len(packet) == 0 || len(packet) > 65535 || p.c.closing.Load() {
++		return false
++	}
++	p.c.mu.Lock()
++	current := p.c.packetPaths[p.peer] == p
++	ep, known := p.c.peerMap.endpointForNodeKey(p.peer)
++	p.c.mu.Unlock()
++	if !current {
++		return false
++	}
++	select {
++	case p.c.packetPathRecv <- packetPathRead{p, append([]byte(nil), packet...)}:
++		return true
++	default:
++		if known {
++			ep.packetCounters.pathDrops.Add(1)
++		}
++		return false
++	}
++}
++
++func (c *Conn) sendPacketPath(peer key.NodePublic, buffs [][]byte, offset int) int {
++	c.mu.Lock()
++	p := c.packetPaths[peer]
++	c.mu.Unlock()
++	if p == nil {
++		return 0
++	}
++	for i, b := range buffs {
++		if !p.send(b[offset:]) {
++			return i
++		}
++	}
++	return len(buffs)
++}
++
++func (c *connBind) receivePacketPath(slab []byte, packets []conn.ReceivedPacket) (int, error) {
++	for r := range c.packetPathRecv {
++		if c.isClosed() {
++			return 0, net.ErrClosed
++		}
++		if r.path == nil || len(r.packet) > len(slab) {
++			continue
++		}
++		c.Conn.mu.Lock()
++		ep, known := c.peerMap.endpointForNodeKey(r.path.peer)
++		current := c.packetPaths[r.path.peer] == r.path
++		c.Conn.mu.Unlock()
++		if !known || !current {
++			continue
++		}
++		packets[0].Size = copy(slab, r.packet)
++		packets[0].Offset = 0
++		packets[0].Endpoint = ep
++		return 1, nil
++	}
++	return 0, net.ErrClosed
++}
++
++// PacketStats counts encrypted datagrams, including tunnel acknowledgements and
++// retransmissions, not application payload or outer TLS/DTLS headers.
++type PacketStats struct {
++	DERPTxBytes uint64
++	DERPRxBytes uint64
++	PathDrops   uint64
++}
++type packetCounters struct {
++	derpTxBytes atomic.Uint64
++	derpRxBytes atomic.Uint64
++	pathDrops   atomic.Uint64
++}
++
++func (c *Conn) PacketStats(peer key.NodePublic) PacketStats {
++	c.mu.Lock()
++	ep, ok := c.peerMap.endpointForNodeKey(peer)
++	c.mu.Unlock()
++	if !ok {
++		return PacketStats{}
++	}
++	return PacketStats{ep.packetCounters.derpTxBytes.Load(), ep.packetCounters.derpRxBytes.Load(), ep.packetCounters.pathDrops.Load()}
++}

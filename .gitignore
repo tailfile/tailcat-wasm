@@ -1,0 +1,9 @@
+node_modules/
+.forks/
+.cache/
+test-results/
+/dist/tailcat.wasm
+/dist/tailcat.wasm.br
+*.tgz
+*.log
+.env

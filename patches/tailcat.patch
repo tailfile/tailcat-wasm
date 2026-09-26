@@ -1,0 +1,31 @@
+--- /dev/null
++++ b/packetpath.go
+@@ -0,0 +1,28 @@
++// Copyright (c) Tailfile contributors
++// SPDX-License-Identifier: BSD-3-Clause
++
++package tailcat
++
++import (
++	"tailscale.com/types/key"
++	"tailscale.com/wgengine/magicsock"
++)
++
++// NewPacketPath attaches an optional encrypted datagram transport after Start.
++// The caller must authenticate the transport's binding to peer first.
++func (s *Server) NewPacketPath(peer key.NodePublic, send func([]byte) bool) *magicsock.PacketPath {
++	return s.lb.sys.MagicSock.Get().NewPacketPath(peer, send)
++}
++
++// NewPacketPath attaches an optional transport to an already started Client.
++func (c *Client) NewPacketPath(peer key.NodePublic, send func([]byte) bool) *magicsock.PacketPath {
++	return c.lb.sys.MagicSock.Get().NewPacketPath(peer, send)
++}
++
++// PacketStats reports actual DERP sends/receives and local packet-path drops.
++func (s *Server) PacketStats(peer key.NodePublic) magicsock.PacketStats {
++	return s.lb.sys.MagicSock.Get().PacketStats(peer)
++}
++func (c *Client) PacketStats(peer key.NodePublic) magicsock.PacketStats {
++	return c.lb.sys.MagicSock.Get().PacketStats(peer)
++}

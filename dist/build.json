@@ -1,0 +1,9 @@
+{
+  "tailcat": "v0.7.0",
+  "tailscale": "v1.103.0-pre.0.20260916030321-a2263542f260",
+  "go": "go1.27.1",
+  "entrypoint": "wasm/main_js.go",
+  "fingerprint": "1fac668d03361fff8bcd3f1abe5db72be408de1665a4c391e3797639fe1de072",
+  "wasmSHA256": "0ff5304bd87dc832031c619a55284f82817985219bfc57df8f13a104c5b33f7b",
+  "runtimeSHA256": "0c949f4996f9a89698e4b5c586de32249c3b69b7baadb64d220073cc04acba14"
+}
