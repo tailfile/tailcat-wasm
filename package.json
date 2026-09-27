@@ -25,22 +25,32 @@
     "tsconfig.json",
     "tsconfig.test.json",
     "README.md",
-    "wasm"
+    "wasm",
+    "vitest.config.ts"
   ],
   "scripts": {
-    "test": "tsx --test tests/*.test.ts",
+    "test": "vitest run --project unit",
+    "test:crypto": "vitest run --project go crypto.integration",
     "check": "tsc --noEmit && tsc -p tsconfig.test.json",
-    "test:demo": "node tests/demo.e2e.ts",
-    "test:coverage": "tsx --test --experimental-test-coverage --test-coverage-include='src/*.ts' tests/*.test.ts",
+    "test:demo": "vitest run --project browser demo.e2e",
+    "test:coverage": "vitest run --project unit --coverage",
     "build": "node scripts/build.ts",
     "build:wasm": "node scripts/build-wasm.ts",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "test:transport": "vitest run --project browser transport.e2e",
+    "bench:transport": "vitest run --project benchmark throughput",
+    "bench:matrix": "BENCH_MATRIX=1 vitest run --project benchmark throughput",
+    "bench:crypto": "vitest run --project benchmark crypto",
+    "bench:setup": "node scripts/setup-bench.ts",
+    "test:patches": "vitest run --project go patches.integration",
+    "test:all": "vitest run --project unit --project go --project browser"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
     "@types/node": "^24.0.0",
-    "tsx": "^4.23.13",
-    "typescript": "7.0.2"
+    "@vitest/coverage-v8": "^5.0.2",
+    "typescript": "7.0.2",
+    "vitest": "^5.0.2"
   },
   "engines": {
     "node": ">=24"

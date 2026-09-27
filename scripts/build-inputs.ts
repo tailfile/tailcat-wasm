@@ -10,6 +10,7 @@ export const tailcatVersion = requiredMatch(
   /github\.com\/tailscale\/tailcat (v\S+)/,
 );
 export const tailscaleVersion = requiredMatch(/tailscale\.com (v\S+)/);
+export const xcryptoVersion = requiredMatch(/golang\.org\/x\/crypto (v\S+)/);
 export const tags = readFileSync(
   resolve(source, "build-tags.txt"),
   "utf8",
@@ -29,7 +30,7 @@ export function fingerprint() {
   const hash = createHash("sha256")
     .update(goVersion)
     .update(JSON.stringify(flags));
-  for (const name of ["go.mod", "go.sum", ...sources])
+  for (const name of ["go.mod", "go.sum", "forks.json", ...sources])
     hash.update(name).update(readFileSync(resolve(source, name)));
   const patches = resolve(source, "../patches");
   for (const name of readdirSync(patches).sort())

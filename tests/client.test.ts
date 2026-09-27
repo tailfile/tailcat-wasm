@@ -1,4 +1,4 @@
-import test, { type TestContext } from "node:test";
+import { test, vi, type TestContext } from "vitest";
 import assert from "node:assert/strict";
 import { getEventListeners } from "node:events";
 import {
@@ -55,7 +55,7 @@ async function fixture(
   overrides: Partial<TailcatOptions> = {},
   rtc?: WebRTCManager,
 ) {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const worker = new Worker();
   const accepted: TailcatConnection[] = [];
   const changes: PeerTransport[][] = [];
@@ -73,7 +73,7 @@ async function fixture(
   );
   worker.receive({ event: "ready" });
   const client = await opening;
-  t.after(() => client.close());
+  t.onTestFinished(() => client.close());
   function accept(id = 10, peer = "peer") {
     worker.receive({
       event: "connection",
@@ -105,8 +105,8 @@ test("MTU bounds and pre-aborted startup reject before worker creation", () => {
   );
 });
 
-test("startup timeout terminates once and detaches abort listener", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+test("startup timeout terminates once and detaches abort listener", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const worker = new Worker();
   const controller = new AbortController();
   const opening = connectWorker(
@@ -115,14 +115,14 @@ test("startup timeout terminates once and detaches abort listener", async (t) =>
     1280,
   );
   const rejected = assert.rejects(opening, /loading timed out/);
-  t.mock.timers.tick(60_000);
+  vi.advanceTimersByTime(60_000);
   await rejected;
   assert.equal(worker.terminations, 1);
   assert.equal(getEventListeners(controller.signal, "abort").length, 0);
 });
 
-test("a failed configure post cleans up startup immediately", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+test("a failed configure post cleans up startup immediately", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const worker = new Worker();
   worker.failure = new Error("worker unavailable");
   await assert.rejects(
@@ -214,6 +214,7 @@ test("writes transfer only the requested view without detaching caller memory", 
   worker.reply("read", null);
   assert.equal(await read, null);
   const halfClose = connection.closeWrite();
+  await tick();
   worker.reply("closeWrite", undefined, "remote closed");
   await assert.rejects(halfClose, /remote closed/);
 });
@@ -232,6 +233,21 @@ for (const pooled of [true, false]) {
     assert.deepEqual([...backing], [9, 1, 2, 9]);
   });
 }
+
+test("disabling RTC still updates the worker when an observer throws", async (t) => {
+  const failure = new Error("observer failed");
+  const rtc: WebRTCManager = {
+    onChange() {},
+    snapshot: () => [],
+    async stats() { return []; },
+    handle() {},
+    setEnabled() { throw failure; },
+    close() {},
+  };
+  const { worker, client } = await fixture(t, {}, rtc);
+  assert.throws(() => client.setWebRTCEnabled(false), (error) => error === failure);
+  assert.equal(worker.last("webRTCEnabled").args.enabled, false);
+});
 
 test("a throwing transport observer cannot prevent fatal cleanup or strand pending requests", async (t) => {
   let throwOnChange = false;
@@ -416,3 +432,38 @@ for (const action of ["close", "abort"] as const) {
     }
   });
 }
+
+test("pending writes are bounded before copying and half-close follows the last write", async (t) => {
+  const { worker, accept } = await fixture(t);
+  const c = accept();
+  const payload = new Uint8Array(2 * 1024 * 1024);
+  const first = c.write(payload);
+  const second = c.write(payload);
+  assert.equal(worker.requests.filter((r) => r.method === "write").length, 1);
+  await assert.rejects(c.write(new Uint8Array(1)), /queue full/);
+  const end = c.closeWrite();
+  await assert.rejects(c.write(new Uint8Array(1)), /closed for writing/);
+  assert(!worker.requests.some((r) => r.method === "closeWrite"));
+  worker.reply("write");
+  await first;
+  await tick();
+  assert.equal(worker.requests.filter((r) => r.method === "write").length, 2);
+  assert(!worker.requests.some((r) => r.method === "closeWrite"));
+  worker.reply("write");
+  await second;
+  await tick();
+  worker.reply("closeWrite");
+  await end;
+});
+
+test("closing interrupts the active write and rejects queued writes without sending them", async (t) => {
+  const { worker, accept } = await fixture(t);
+  const c = accept();
+  const first = assert.rejects(c.write(new Uint8Array(10)), /closed/);
+  const second = assert.rejects(c.write(new Uint8Array(10)), /closed/);
+  const closed = c.close();
+  worker.reply("close");
+  worker.reply("write", undefined, "closed");
+  await Promise.all([first, second, closed]);
+  assert.equal(worker.requests.filter((r) => r.method === "write").length, 1);
+});

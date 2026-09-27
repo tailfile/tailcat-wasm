@@ -7,3 +7,6 @@ test-results/
 *.tgz
 *.log
 .env
+
+benchmarks/
+coverage/

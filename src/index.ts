@@ -43,6 +43,7 @@ export async function createTailcat(options: TailcatOptions) {
           options.webRTC || {},
           (message, transfer) => worker.postMessage(message, transfer ?? []),
           options.webRTC !== false,
+          mtu,
         ),
   );
 }

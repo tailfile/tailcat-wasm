@@ -1,4 +1,4 @@
-import test, { type TestContext } from "node:test";
+import { test, type TestContext } from "vitest";
 import assert from "node:assert/strict";
 import {
   existsSync,
@@ -14,12 +14,13 @@ import { prepareForks } from "../scripts/prepare-forks.ts";
 
 function fixture(t: TestContext) {
   const root = mkdtempSync(join(tmpdir(), "tailcat-forks-test-"));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  t.onTestFinished(() => rmSync(root, { recursive: true, force: true }));
   const pins = [
-    ["tailcat", "github.com/tailscale/tailcat", "v1.2.3"],
+    ["tailcat", "github.com/tailscale/tailcat", "v1.2.3-0.20260102030405-abcdef123456"],
     ["tailscale", "tailscale.com", "v2.3.4-pre.0.20260102030405-abcdef123456"],
+    ["xcrypto", "golang.org/x/crypto", "v3.4.5-0.20260102030405-abcdef123456"],
   ];
-  const downloads: Record<string, Record<string, string>> = {};
+  const downloads: Record<string, Record<string, any>> = {};
   const sums: string[] = [];
   for (const name of ["wasm", "patches"])
     mkdirSync(join(root, name), { recursive: true });
@@ -40,12 +41,16 @@ function fixture(t: TestContext) {
       Dir: source,
       Sum: "h1:module-checksum",
       GoModSum: "h1:go-mod-checksum",
+      Origin: { Hash: "abcdef123456" + "0".repeat(28) },
     };
     sums.push(`${path} ${version} h1:module-checksum`);
     sums.push(`${path} ${version}/go.mod h1:go-mod-checksum`);
   }
   const module = `module test\n\nrequire (\n${pins.map(([, path, version]) => `\t${path} ${version}`).join("\n")}\n)\n`;
   writeFileSync(join(root, "wasm/go.mod"), module);
+  writeFileSync(join(root, "wasm/forks.json"), JSON.stringify(Object.fromEntries(
+    pins.map(([, path, version]) => [path, { version, commit: "abcdef123456" + "0".repeat(28) }]),
+  )));
   writeFileSync(join(root, "wasm/go.sum"), sums.join("\n") + "\n");
   const go = join(root, "fake-go");
   // Exercise the real subprocess boundary without Go, a registry or a network.
@@ -69,7 +74,7 @@ console.log(JSON.stringify(downloads[args[3]]));
   return { root, go, pins, downloads, saveDownloads, module, sums };
 }
 
-test("fork preparation uses exact tags and pseudo-versions, replaces old edits, and applies patches", (t) => {
+test("fork preparation uses commit pseudo-versions, replaces old edits, and applies patches", (t) => {
   const { root, go, pins } = fixture(t);
   prepareForks(go, root);
   for (const [name] of pins) {
@@ -97,7 +102,7 @@ test("fork preparation uses exact tags and pseudo-versions, replaces old edits, 
   );
 });
 
-test("floating refs and partial versions fail before invoking Go or replacing a fork", (t) => {
+test("floating refs and versions without matching commit locks fail before invoking Go or replacing a fork", (t) => {
   const { root, go, module } = fixture(t);
   for (const version of [
     "latest",
@@ -106,20 +111,55 @@ test("floating refs and partial versions fail before invoking Go or replacing a 
     "v1",
     "v1.2",
     "abcdef123456",
+    "v1.2.3",
+    "v1.2.3-pre.1",
+    "v1.2.3-0.20260102030405-abcdef12345",
   ]) {
-    writeFileSync(join(root, "wasm/go.mod"), module.replace("v1.2.3", version));
+    writeFileSync(
+      join(root, "wasm/go.mod"),
+      module.replace("v1.2.3-0.20260102030405-abcdef123456", version),
+    );
     assert.throws(
       () => prepareForks(go, root),
-      /exact tag or Go pseudo-version/,
+      /exact version and full commit/,
     );
   }
   assert(!existsSync(join(root, "calls.jsonl")));
   assert(existsSync(join(root, ".forks/tailcat/stale.txt")));
 });
 
+test("canonical tags require both a matching full commit and checksum", (t) => {
+  const { root, go, downloads, saveDownloads, module, sums } = fixture(t);
+  const oldVersion = "v1.2.3-0.20260102030405-abcdef123456";
+  const path = "github.com/tailscale/tailcat";
+  const info = downloads[`${path}@${oldVersion}`];
+  info.Version = "v1.2.3";
+  downloads[`${path}@v1.2.3`] = info;
+  writeFileSync(join(root, "wasm/go.mod"), module.replace(oldVersion, "v1.2.3"));
+  writeFileSync(join(root, "wasm/go.sum"), sums.join("\n").replaceAll(oldVersion, "v1.2.3") + "\n");
+  const pins = JSON.parse(readFileSync(join(root, "wasm/forks.json"), "utf8"));
+  pins[path].version = "v1.2.3";
+  writeFileSync(join(root, "wasm/forks.json"), JSON.stringify(pins));
+  const origin = info.Origin;
+  for (const invalid of [undefined, { Hash: "f".repeat(40) }]) {
+    info.Origin = invalid;
+    saveDownloads();
+    assert.throws(() => prepareForks(go, root), /Commit mismatch/);
+    assert(existsSync(join(root, ".forks/tailcat/stale.txt")));
+  }
+  info.Origin = origin;
+  info.Sum = "unexpected";
+  saveDownloads();
+  assert.throws(() => prepareForks(go, root), /Checksum mismatch/);
+  info.Sum = "h1:module-checksum";
+  saveDownloads();
+  prepareForks(go, root);
+  assert.equal(readFileSync(join(root, ".forks/tailcat/patched.txt"), "utf8"), "tailcat\n");
+});
+
 test("a different downloaded module, version or checksum never replaces the locked fork", (t) => {
   const { root, go, downloads, saveDownloads, sums } = fixture(t);
-  const info = downloads["github.com/tailscale/tailcat@v1.2.3"];
+  const info = downloads["github.com/tailscale/tailcat@v1.2.3-0.20260102030405-abcdef123456"];
   for (const field of ["Path", "Version", "Sum", "GoModSum"]) {
     const original = info[field];
     info[field] = "unexpected";

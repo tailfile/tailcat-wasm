@@ -107,7 +107,7 @@
  		update(0, netip.AddrPortFrom(ep.nodeAddr, 0), srcAddr.ap, 1, dm.n, true)
 --- /dev/null
 +++ b/wgengine/magicsock/packetpath.go
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,160 @@
 +// Copyright (c) Tailfile contributors
 +// SPDX-License-Identifier: BSD-3-Clause
 +
@@ -125,9 +125,10 @@
 +// The embedding binds its transport to peer using authenticated signaling.
 +// WireGuard still authenticates every received packet. It is never plaintext.
 +type PacketPath struct {
-+	c    *Conn
-+	peer key.NodePublic
-+	send func([]byte) bool
++	c        *Conn
++	peer     key.NodePublic
++	send     func([]byte) bool
++	recvFree chan []byte // guarded by c.mu
 +}
 +
 +type packetPathRead struct {
@@ -135,8 +136,11 @@
 +	packet []byte
 +}
 +
-+// NewPacketPath replaces the optional path for peer. send must be nonblocking,
-+// copy borrowed bytes before returning, and return false when unavailable/full.
++// NewPacketPath replaces the optional path for peer. send must be nonblocking
++// and copy borrowed bytes before returning if it retains the datagram. True
++// means the embedding consumed the datagram, including any bounded UDP-style
++// local drop. False means it was not handled; this datagram and the remaining
++// batch use the ordinary path.
 +func (c *Conn) NewPacketPath(peer key.NodePublic, send func([]byte) bool) *PacketPath {
 +	p := &PacketPath{c: c, peer: peer, send: send}
 +	c.mu.Lock()
@@ -156,8 +160,21 @@
 +	p.c.mu.Unlock()
 +}
 +
-+// Receive copies and queues a datagram, dropping on overload like a UDP socket.
-+func (p *PacketPath) Receive(packet []byte) bool {
++// SetRecvPool enables recycling of buffers queued by ReceiveOwned. The consumer
++// returns copied-out buffers to free without blocking; the caller may still
++// allocate replacements when the pool is empty. A pool must remain open even
++// after replacement: an in-flight receive may still return a buffer to it.
++func (p *PacketPath) SetRecvPool(free chan []byte) {
++	p.c.mu.Lock()
++	p.recvFree = free
++	p.c.mu.Unlock()
++}
++
++// ReceiveOwned queues a datagram and takes ownership of packet only when it
++// returns true. On success the caller must not reuse or modify packet until it
++// is returned through the receive pool. On false the caller retains ownership.
++// Drop behavior matches a UDP socket.
++func (p *PacketPath) ReceiveOwned(packet []byte) bool {
 +	if len(packet) == 0 || len(packet) > 65535 || p.c.closing.Load() {
 +		return false
 +	}
@@ -169,7 +186,7 @@
 +		return false
 +	}
 +	select {
-+	case p.c.packetPathRecv <- packetPathRead{p, append([]byte(nil), packet...)}:
++	case p.c.packetPathRecv <- packetPathRead{p, packet}:
 +		return true
 +	default:
 +		if known {
@@ -177,6 +194,11 @@
 +		}
 +		return false
 +	}
++}
++
++// Receive copies and queues a datagram, dropping on overload like a UDP socket.
++func (p *PacketPath) Receive(packet []byte) bool {
++	return p.ReceiveOwned(append([]byte(nil), packet...))
 +}
 +
 +func (c *Conn) sendPacketPath(peer key.NodePublic, buffs [][]byte, offset int) int {
@@ -205,6 +227,7 @@
 +		c.Conn.mu.Lock()
 +		ep, known := c.peerMap.endpointForNodeKey(r.path.peer)
 +		current := c.packetPaths[r.path.peer] == r.path
++		free := r.path.recvFree
 +		c.Conn.mu.Unlock()
 +		if !known || !current {
 +			continue
@@ -212,6 +235,12 @@
 +		packets[0].Size = copy(slab, r.packet)
 +		packets[0].Offset = 0
 +		packets[0].Endpoint = ep
++		if free != nil {
++			select {
++			case free <- r.packet:
++			default:
++			}
++		}
 +		return 1, nil
 +	}
 +	return 0, net.ErrClosed
@@ -239,3 +268,265 @@
 +	}
 +	return PacketStats{ep.packetCounters.derpTxBytes.Load(), ep.packetCounters.derpRxBytes.Load(), ep.packetCounters.pathDrops.Load()}
 +}
+--- /dev/null
++++ b/wgengine/magicsock/packetpath_test.go
+@@ -0,0 +1,244 @@
++// Copyright (c) Tailfile contributors
++// SPDX-License-Identifier: BSD-3-Clause
++
++package magicsock
++
++import (
++	"bytes"
++	"errors"
++	"net"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/tailscale/wireguard-go/conn"
++	"tailscale.com/types/key"
++)
++
++func packetPathTestConn() (*Conn, *endpoint) {
++	c := &Conn{
++		packetPaths:    make(map[key.NodePublic]*PacketPath),
++		packetPathRecv: make(chan packetPathRead, 64),
++		derpRecvCh:     make(chan derpReadResult, 1),
++		peerMap:        newPeerMap(),
++	}
++	c.bind = &connBind{Conn: c}
++	ep := &endpoint{c: c, publicKey: key.NewNode().Public()}
++	c.peerMap.byNodeKey[ep.publicKey] = &peerInfo{ep: ep}
++	return c, ep
++}
++
++func packetPathTestRead(t *testing.T, c *Conn, ep *endpoint, want []byte) {
++	t.Helper()
++	slab := make([]byte, len(want))
++	packets := make([]conn.ReceivedPacket, 1)
++	n, err := c.bind.receivePacketPath(slab, packets)
++	if err != nil || n != 1 {
++		t.Fatalf("receive = %d, %v", n, err)
++	}
++	if packets[0].Size != len(want) || packets[0].Offset != 0 || packets[0].Endpoint != ep || !bytes.Equal(slab, want) {
++		t.Fatalf("receive = %+v, payload %x; want %x", packets[0], slab, want)
++	}
++}
++
++func TestPacketPathSendPrefix(t *testing.T) {
++	for _, accept := range []int{0, 1, 3} {
++		t.Run(string(rune('0'+accept)), func(t *testing.T) {
++			c, ep := packetPathTestConn()
++			buffs := [][]byte{{99, 1}, {99, 2}, {99, 3}}
++			if got := c.sendPacketPath(ep.publicKey, buffs, 1); got != 0 {
++				t.Fatalf("missing path accepted %d", got)
++			}
++			calls := 0
++			p := c.NewPacketPath(ep.publicKey, func(b []byte) bool {
++				if !bytes.Equal(b, buffs[calls][1:]) {
++					t.Fatalf("wrong packet or offset: %x", b)
++				}
++				calls++
++				return calls <= accept
++			})
++			got := c.sendPacketPath(ep.publicKey, buffs, 1)
++			if got != accept || calls != min(accept+1, len(buffs)) {
++				t.Fatalf("accepted %d with %d calls; want %d", got, calls, accept)
++			}
++			p.Close()
++			if got := c.sendPacketPath(ep.publicKey, buffs, 1); got != 0 {
++				t.Fatalf("closed path accepted %d", got)
++			}
++		})
++	}
++}
++
++func TestPacketPathGeneration(t *testing.T) {
++	c, ep := packetPathTestConn()
++	old := c.NewPacketPath(ep.publicKey, func([]byte) bool { return true })
++	if !old.ReceiveOwned([]byte{1}) {
++		t.Fatal("old path enqueue failed")
++	}
++	current := c.NewPacketPath(ep.publicKey, func([]byte) bool { return true })
++	old.Close()
++	if old.ReceiveOwned([]byte{2}) {
++		t.Fatal("old path accepted new packet")
++	}
++	if !current.ReceiveOwned([]byte{3}) {
++		t.Fatal("old close removed current path")
++	}
++	packetPathTestRead(t, c, ep, []byte{3}) // skips already queued old generation
++	current.Close()
++	if current.ReceiveOwned([]byte{4}) {
++		t.Fatal("closed current path accepted packet")
++	}
++}
++
++func TestPacketPathReceiveOwnership(t *testing.T) {
++	c, ep := packetPathTestConn()
++	p := c.NewPacketPath(ep.publicKey, func([]byte) bool { return true })
++	free := make(chan []byte, 1)
++	p.SetRecvPool(free)
++	borrowed := []byte{1, 2}
++	if !p.Receive(borrowed) {
++		t.Fatal("copy enqueue failed")
++	}
++	borrowed[0] = 9
++	packetPathTestRead(t, c, ep, []byte{1, 2})
++	copied := <-free
++	if &copied[0] == &borrowed[0] {
++		t.Fatal("Receive retained caller buffer")
++	}
++	owned := []byte{3, 4}
++	if !p.ReceiveOwned(owned) {
++		t.Fatal("owned enqueue failed")
++	}
++	select {
++	case <-free:
++		t.Fatal("owned buffer recycled before consumption")
++	default:
++	}
++	packetPathTestRead(t, c, ep, []byte{3, 4})
++	recycled := <-free
++	if &recycled[0] != &owned[0] {
++		t.Fatal("owned buffer was copied or not recycled")
++	}
++	// Once recycled, the producer may write into it again.
++	recycled[0] = 5
++	if !p.ReceiveOwned(recycled) {
++		t.Fatal("recycled enqueue failed")
++	}
++	packetPathTestRead(t, c, ep, []byte{5, 4})
++}
++
++func TestPacketPathQueueFull(t *testing.T) {
++	c, ep := packetPathTestConn()
++	p := c.NewPacketPath(ep.publicKey, func([]byte) bool { return true })
++	for i := 0; i < cap(c.packetPathRecv); i++ {
++		if !p.ReceiveOwned([]byte{byte(i)}) {
++			t.Fatal("queue filled early")
++		}
++	}
++	rejected := []byte{200}
++	if p.ReceiveOwned(rejected) {
++		t.Fatal("full queue accepted packet")
++	}
++	rejected[0] = 201 // false retains ownership; the consumer must never see it
++	if stats := c.PacketStats(ep.publicKey); stats.PathDrops != 1 {
++		t.Fatalf("stats = %+v", stats)
++	}
++	for i := 0; i < cap(c.packetPathRecv); i++ {
++		packetPathTestRead(t, c, ep, []byte{byte(i)})
++	}
++	if len(c.packetPathRecv) != 0 {
++		t.Fatal("rejected packet was queued")
++	}
++	if !p.ReceiveOwned(rejected) {
++		t.Fatal("queue did not recover")
++	}
++	packetPathTestRead(t, c, ep, []byte{201})
++}
++
++func TestPacketPathReceiveBounds(t *testing.T) {
++	c, ep := packetPathTestConn()
++	p := c.NewPacketPath(ep.publicKey, func([]byte) bool { return true })
++	for _, bad := range [][]byte{nil, {}, make([]byte, 65536)} {
++		if p.ReceiveOwned(bad) {
++			t.Fatalf("accepted length %d", len(bad))
++		}
++	}
++	if !p.ReceiveOwned([]byte{1, 2}) || !p.ReceiveOwned([]byte{3}) {
++		t.Fatal("enqueue failed")
++	}
++	packetPathTestRead(t, c, ep, []byte{3}) // oversized packet must not be truncated
++	unknown := c.NewPacketPath(key.NewNode().Public(), func([]byte) bool { return true })
++	if !unknown.ReceiveOwned([]byte{4}) || !p.ReceiveOwned([]byte{5}) {
++		t.Fatal("enqueue failed")
++	}
++	packetPathTestRead(t, c, ep, []byte{5})
++	c.closing.Store(true)
++	if p.ReceiveOwned([]byte{6}) {
++		t.Fatal("closing Conn accepted packet")
++	}
++}
++
++func TestPacketPathPoolConcurrent(t *testing.T) {
++	c, ep := packetPathTestConn()
++	p := c.NewPacketPath(ep.publicKey, func([]byte) bool { return true })
++	var wg sync.WaitGroup
++	wg.Add(1)
++	go func() {
++		defer wg.Done()
++		for i := 0; i < 1000; i++ {
++			p.SetRecvPool(make(chan []byte, 1))
++		}
++	}()
++	for i := 0; i < 1000; i++ {
++		if !p.ReceiveOwned([]byte{1}) {
++			t.Fatal("enqueue failed")
++		}
++		packetPathTestRead(t, c, ep, []byte{1})
++	}
++	wg.Wait()
++}
++
++func TestPacketPathBindClose(t *testing.T) {
++	for _, full := range []bool{false, true} {
++		name := "empty"
++		if full {
++			name = "full"
++		}
++		t.Run(name, func(t *testing.T) {
++			c, _ := packetPathTestConn()
++			if full {
++				for i := 0; i < cap(c.packetPathRecv); i++ {
++					c.packetPathRecv <- packetPathRead{}
++				}
++			}
++			done := make(chan error, 1)
++			if full {
++				// Close a full queue before starting its reader, exercising the
++				// nonblocking sentinel branch deterministically.
++				if err := c.bind.Close(); err != nil {
++					t.Fatal(err)
++				}
++			}
++			go func() {
++				_, err := c.bind.receivePacketPath(make([]byte, 1), make([]conn.ReceivedPacket, 1))
++				done <- err
++			}()
++			if !full {
++				if err := c.bind.Close(); err != nil {
++					t.Fatal(err)
++				}
++			}
++			select {
++			case err := <-done:
++				if !errors.Is(err, net.ErrClosed) {
++					t.Fatalf("receive after Close: %v", err)
++				}
++			case <-time.After(5 * time.Second):
++				t.Fatal("Close did not wake receivePacketPath")
++			}
++			if err := c.bind.Close(); err != nil {
++				t.Fatal(err)
++			}
++		})
++	}
++}
+--- a/derp/derphttp/derphttp_client.go
++++ b/derp/derphttp/derphttp_client.go
+@@ -409,7 +409,11 @@
+ 			c.logf("%s: websocket to %v error: %v", caller, urlStr, err)
+ 			return nil, 0, err
+ 		}
+-		brw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
++		// Each underlying Write becomes a WebSocket message (and a JS/WASM
++		// crossing). Fit common tunnel packets in one message instead of
++		// splitting them at 4 KiB. DERP still flushes every frame immediately;
++		// keep this within the WebSocket peer's default 32 KiB message limit.
++		brw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriterSize(conn, 32<<10))
+ 		derpClient, err := derp.NewClient(c.privateKey, conn, brw, c.logf,
+ 			derp.MeshKey(c.MeshKey),
+ 			derp.CanAckPings(c.canAckPings),

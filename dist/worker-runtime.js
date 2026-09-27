@@ -1,4 +1,5 @@
 import { wasmResponse } from "./wasm-response.js";
+import { RTC_HEADER, RTC_WORKER_LIMIT } from "./rtc-protocol.js";
 export function startWorker(scope, loadWasm) {
     const connections = new Map();
     let nextConnection = 0;
@@ -12,19 +13,74 @@ export function startWorker(scope, loadWasm) {
     const waitingDials = new Set();
     let webRTC = false;
     let listenerOptions;
+    let wasmMemory;
+    const RECEIVED_BATCH = 16;
     const paths = new Map();
+    function flushReceived(session, path) {
+        if (!path || !path.received.length)
+            return;
+        clearTimeout(path.receivedTimer);
+        path.receivedTimer = undefined;
+        const value = { bytes: path.receivedBytes, items: path.received };
+        path.received = [];
+        path.receivedBytes = 0;
+        scope.postMessage({ event: "rtc", session, kind: "received", value });
+    }
+    function noteReceived(session, path, sequence, accepted, bytes) {
+        path.received.push({ sequence, accepted });
+        path.receivedBytes += bytes;
+        if (path.received.length >= RECEIVED_BATCH) {
+            flushReceived(session, path);
+            return;
+        }
+        // Batch a packet trickle without delaying delivery health for long.
+        path.receivedTimer ??= setTimeout(() => flushReceived(session, paths.get(session)), 2);
+    }
     scope.onTailcatRTC = (session, kind, value) => {
-        if (kind === "start")
-            paths.set(session, { ready: false, pending: 0 });
-        if (kind === "closed")
+        if (kind === "start") {
+            const start = value;
+            paths.set(session, {
+                ready: false,
+                pending: 0,
+                dropped: 0,
+                recvAddress: typeof start?.recvBuffer === "number" ? start.recvBuffer : undefined,
+                recvCapacity: typeof start?.recvCapacity === "number" ? start.recvCapacity : undefined,
+                received: [],
+                receivedBytes: 0,
+            });
+        }
+        if (kind === "closed") {
+            const path = paths.get(session);
+            if (path?.dropped)
+                scope.postMessage({
+                    event: "rtc",
+                    session,
+                    kind: "dropped",
+                    value: path.dropped,
+                });
+            flushReceived(session, path);
             paths.delete(session);
+        }
         scope.postMessage({ event: "rtc", session, kind, value });
     };
-    scope.onTailcatRTCPacket = (session, bytes) => {
+    scope.onTailcatRTCPacket = (session, address, length) => {
         const path = paths.get(session);
-        if (!path?.ready || path.pending + bytes.byteLength > 1024 * 1024)
+        if (!path?.ready)
             return false;
-        path.pending += bytes.byteLength;
+        if (path.pending + length > RTC_WORKER_LIMIT) {
+            // Absorb short scheduling bursts like a bounded UDP socket: a local
+            // drop lets inner TCP apply backpressure without mixing paths. Queue age
+            // and delivery receipts, not one full buffer, trigger a path switch.
+            path.dropped++;
+            return true;
+        }
+        // Copy synchronously while Go owns the borrowed packet. Always obtain the
+        // current buffer: memory.grow detaches the previous ArrayBuffer. Headroom
+        // lets the main thread add RTC framing without copying the ciphertext again.
+        const frame = new Uint8Array(RTC_HEADER + length);
+        frame.set(new Uint8Array(wasmMemory.buffer, address, length), RTC_HEADER);
+        const bytes = frame.subarray(RTC_HEADER);
+        path.pending += length;
         scope.postMessage({ event: "rtc", session, kind: "packet", value: bytes }, [
             bytes.buffer,
         ]);
@@ -59,6 +115,17 @@ export function startWorker(scope, loadWasm) {
     }
     // The worker is terminated with the runtime. Poll only while streams exist.
     const statsTimer = setInterval(() => {
+        for (const [session, path] of paths) {
+            if (path.dropped) {
+                scope.postMessage({
+                    event: "rtc",
+                    session,
+                    kind: "dropped",
+                    value: path.dropped,
+                });
+                path.dropped = 0;
+            }
+        }
         if (connections.size)
             reportTransports();
     }, 1000);
@@ -145,11 +212,15 @@ export function startWorker(scope, loadWasm) {
             const go = new scope.Go();
             const { tunnelMTU } = config;
             webRTC = config.webRTC;
+            scope.tailcatWebRTCEnabled = webRTC;
             // DERP/WSS and WebRTC/SCTP carry complete encrypted tunnel packets.
             // This does not change a host UDP interface MTU.
             // TCP MSS negotiation retains compatibility with peers using MTU 1280.
             go.env.TS_DEBUG_MTU = String(tunnelMTU);
             const { instance } = await WebAssembly.instantiateStreaming(loadWasm().then(wasmResponse), go.importObject);
+            if (!(instance.exports.mem instanceof WebAssembly.Memory))
+                throw new Error("Go WASM does not export its linear memory");
+            wasmMemory = instance.exports.mem;
             return go.run(instance);
         })
             .then(() => failed(new Error("Tailcat stopped")), failed);
@@ -163,12 +234,13 @@ export function startWorker(scope, loadWasm) {
     scope.onmessage = async ({ data }) => {
         if (data.method === "webRTCEnabled") {
             webRTC = data.args.enabled;
+            scope.tailcatWebRTCEnabled = webRTC;
             if (listenerOptions)
                 listenerOptions.webRTC = webRTC;
             return;
         }
         if (data.method === "rtc") {
-            const { session, kind, value } = data.args;
+            const { session, kind, value, sequence } = data.args;
             const path = paths.get(session);
             if (!path)
                 return;
@@ -179,14 +251,31 @@ export function startWorker(scope, loadWasm) {
             else {
                 if (kind === "closed")
                     path.ready = false;
-                scope.tailcatRTC(session, kind, value ?? null);
-                if (kind === "packet")
-                    scope.postMessage({
-                        event: "rtc",
-                        session,
-                        kind: "received",
-                        value: value.byteLength,
-                    });
+                if (kind === "packet" && value instanceof Uint8Array) {
+                    const bytes = value;
+                    let accepted = false;
+                    if (path.recvAddress !== undefined &&
+                        path.recvCapacity !== undefined &&
+                        bytes.byteLength <= path.recvCapacity) {
+                        // Copy directly into the Go-owned receive buffer: one memcpy instead
+                        // of a per-packet js.Value, Go allocation and CopyBytesToGo dispatch.
+                        // Go takes ownership and returns the next buffer's address; 0 rejects.
+                        new Uint8Array(wasmMemory.buffer, path.recvAddress, path.recvCapacity).set(bytes);
+                        const nextAddress = scope.tailcatRTC(session, "packet", bytes.byteLength);
+                        if (typeof nextAddress === "number" && nextAddress !== 0) {
+                            path.recvAddress = nextAddress;
+                            accepted = true;
+                        }
+                    }
+                    else {
+                        // Legacy Worker/WASM pair without buffer addresses.
+                        accepted = scope.tailcatRTC(session, "packet", value);
+                    }
+                    noteReceived(session, path, sequence, accepted === true, bytes.byteLength);
+                }
+                else {
+                    scope.tailcatRTC(session, kind, value ?? null);
+                }
             }
             return;
         }
@@ -216,23 +305,24 @@ export function startWorker(scope, loadWasm) {
             else if (method === "listen") {
                 if (identity || listening)
                     throw new Error("Already listening");
-                let privateKey = args.privateKeyJSON;
-                if (privateKey && args.regionID !== undefined) {
-                    if (!Number.isInteger(args.regionID) || args.regionID <= 0)
-                        throw new Error("Invalid relay region");
-                    const saved = JSON.parse(privateKey);
-                    saved.serverKey.Public.RegionID = args.regionID;
-                    saved.serverKey.Public.Region = null;
-                    privateKey = JSON.stringify(saved);
-                }
-                listenerOptions = {
-                    webRTC,
-                    derpMapURL: args.derpMapURL,
-                    privateKey,
-                    onConnection: accept,
-                };
                 listening = true;
                 try {
+                    let privateKey = args.privateKeyJSON;
+                    if (args.regionID !== undefined) {
+                        if (!Number.isInteger(args.regionID) || args.regionID <= 0)
+                            throw new Error("Invalid relay region");
+                        privateKey ??= (await scope.tailcatCreateIdentity()).privateKeyJSON;
+                        const saved = JSON.parse(privateKey);
+                        saved.serverKey.Public.RegionID = args.regionID;
+                        saved.serverKey.Public.Region = null;
+                        privateKey = JSON.stringify(saved);
+                    }
+                    listenerOptions = {
+                        webRTC,
+                        derpMapURL: args.derpMapURL,
+                        privateKey,
+                        onConnection: accept,
+                    };
                     const listener = await scope.tailcatListen(listenerOptions);
                     result = identity = {
                         address: listener.addr,

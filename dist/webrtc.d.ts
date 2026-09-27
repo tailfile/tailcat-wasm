@@ -15,6 +15,9 @@ export interface TransportStats {
     rxBytes: number;
     droppedPackets: number;
     bufferedBytes: number;
+    acknowledgedBytes: number;
+    deliveryRTTMS?: number;
+    fallbackReason?: string;
     rttMS?: number;
     candidateProtocol?: string;
     localCandidateType?: string;
@@ -26,7 +29,7 @@ export interface PacketStats {
     pathDrops: number;
 }
 export type PeerTransport = Pick<TransportStats, "peerNodeKey" | "state"> & Partial<Omit<TransportStats, "session" | "peerNodeKey" | "state"> & PacketStats>;
-export declare function createWebRTC(options: WebRTCOptions, send: (message: Record<string, unknown>, transfer?: ArrayBuffer[]) => void, initiallyEnabled?: boolean): {
+export declare function createWebRTC(options: WebRTCOptions, send: (message: Record<string, unknown>, transfer?: ArrayBuffer[]) => void, initiallyEnabled?: boolean, tunnelMTU?: number): {
     onChange(callback: () => void): void;
     snapshot(): PeerTransport[];
     handle({ session: id, kind, value, }: {

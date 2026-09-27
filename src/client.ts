@@ -1,4 +1,5 @@
 import type { PeerTransport, WebRTCManager, WebRTCOptions } from "./webrtc.js";
+import { DEFAULT_TUNNEL_MTU } from "./rtc-protocol.js";
 
 /** Upstream ParseAddrRaw JSON output, with PresharedKey redacted. */
 export interface AddressDescription {
@@ -15,6 +16,7 @@ export interface TailcatConnection {
   readonly peerNodeKey: string;
   /** Only one read may be pending per stream; overlapping reads reject. */
   read(): Promise<Uint8Array | null>;
+  /** Writes are ordered. At most 4 MiB / 64 writes may be pending; await writes for backpressure. */
   write(bytes: Uint8Array): Promise<void>;
   closeWrite(): Promise<void>;
   close(): Promise<void>;
@@ -30,7 +32,7 @@ export interface ListenerIdentity extends TransportIdentity {
 }
 export interface ListenOptions {
   privateKeyJSON?: string;
-  /** Move the existing identity to a selected relay region without rotating its keys. */
+  /** Select a relay region for a new or existing identity without rotating saved keys. */
   regionID?: number;
 }
 
@@ -39,7 +41,7 @@ export interface TailcatOptions {
   webRTC?: false | WebRTCOptions;
   signal?: AbortSignal;
   assetsURL?: string;
-  /** Inner tunnel MTU, from 1280 to 32768; also carried as WebRTC messages. */
+  /** Inner tunnel MTU, default 8192, from 1280 to 32768; also carried as WebRTC messages. */
   tunnelMTU?: number;
   onConnection(connection: TailcatConnection): void;
   /** Active authenticated peers only; closing the last stream removes a peer. */
@@ -54,7 +56,7 @@ export interface WorkerPort {
 }
 export function validateOptions(options: TailcatOptions) {
   options.signal?.throwIfAborted();
-  const mtu = options.tunnelMTU ?? 32768;
+  const mtu = options.tunnelMTU ?? DEFAULT_TUNNEL_MTU;
   if (!Number.isInteger(mtu) || mtu < 1280 || mtu > 32768)
     throw new Error("tunnelMTU must be between 1280 and 32768");
   return mtu;
@@ -173,6 +175,11 @@ export async function connectWorker(
   ): TailcatConnection {
     activeConnections.set(id, peerNodeKey);
     let closing: Promise<void> | undefined;
+    let writeTail: Promise<void> = Promise.resolve();
+    let pendingWriteBytes = 0;
+    let pendingWrites = 0;
+    let writeError: unknown;
+    let halfClosing: Promise<void> | undefined;
     function close() {
       return (closing ??= call<void>("close", { connection: id }).finally(
         () => {
@@ -203,14 +210,49 @@ export async function connectWorker(
       peerNodeKey,
       read: () => streamCall("read"),
       write: (bytes) => {
+        if (closing || halfClosing || closed)
+          return Promise.reject(new Error("Connection is closed for writing"));
+        if (writeError) return Promise.reject(writeError);
+        if (
+          pendingWrites >= 64 ||
+          pendingWriteBytes + bytes.byteLength > 4 * 1024 * 1024
+        )
+          return Promise.reject(
+            new Error(
+              "Write queue full (4 MiB / 64 writes); use smaller chunks and await previous writes",
+            ),
+          );
         // Structured clone copies a view's entire backing ArrayBuffer. Copy
         // only this write, then transfer it without detaching the caller's data.
         // Buffer.slice() is a view, unlike Uint8Array.slice(). Always allocate
         // a plain Uint8Array so Node buffers retain ownership of their memory.
         const owned = new Uint8Array(bytes);
-        return streamCall("write", { bytes: owned }, [owned.buffer]);
+        const size = owned.byteLength;
+        pendingWriteBytes += size;
+        const first = pendingWrites++ === 0;
+        const submit = () => {
+          if (writeError) return Promise.reject<void>(writeError);
+          return streamCall<void>("write", { bytes: owned }, [owned.buffer]);
+        };
+        const result = (first ? submit() : writeTail.then(submit))
+          .catch((error) => {
+            writeError = error;
+            throw error;
+          })
+          .finally(() => {
+            pendingWriteBytes -= size;
+            pendingWrites--;
+          });
+        // Retain the original rejection for the caller, while the queue has a
+        // handled tail even if no later write or half-close is submitted.
+        writeTail = result.catch(() => {});
+        return result;
       },
-      closeWrite: () => streamCall("closeWrite"),
+      closeWrite: () =>
+        (halfClosing ??= writeTail.then(() => {
+          if (writeError) throw writeError;
+          return streamCall<void>("closeWrite");
+        })),
       close,
     };
   }
@@ -259,11 +301,14 @@ export async function connectWorker(
   if (closed) throw new Error("Transport closed");
   return {
     getTransportStats: async () => (rtc ? rtc.stats() : []),
-    /** Disabling restores DERP; re-enabling applies to subsequent connections. */
+    /** Disabling restores DERP; re-enabling resumes existing upgrade loops and enables future connections. */
     setWebRTCEnabled: (enabled: boolean) => {
       if (closed || !rtc) return;
-      rtc.setEnabled(enabled);
-      post({ method: "webRTCEnabled", args: { enabled } });
+      try {
+        rtc.setEnabled(enabled);
+      } finally {
+        post({ method: "webRTCEnabled", args: { enabled } });
+      }
     },
     /** Generate native keys locally, without a listener, DERP map or network connection. */
     createIdentity: () => call<TransportIdentity>("createIdentity"),

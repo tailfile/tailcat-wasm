@@ -9,6 +9,8 @@ for (const name of [
   "index.d.ts",
   "worker.js",
   "client.js",
+  "webrtc.js",
+  "rtc-protocol.js",
   "worker-runtime.js",
   "node.js",
   "node-worker.js",

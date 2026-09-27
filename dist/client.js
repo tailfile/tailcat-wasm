@@ -1,6 +1,7 @@
+import { DEFAULT_TUNNEL_MTU } from "./rtc-protocol.js";
 export function validateOptions(options) {
     options.signal?.throwIfAborted();
-    const mtu = options.tunnelMTU ?? 32768;
+    const mtu = options.tunnelMTU ?? DEFAULT_TUNNEL_MTU;
     if (!Number.isInteger(mtu) || mtu < 1280 || mtu > 32768)
         throw new Error("tunnelMTU must be between 1280 and 32768");
     return mtu;
@@ -102,6 +103,11 @@ export async function connectWorker(worker, options, tunnelMTU, rtc) {
     function connection(id, peerNodeKey, port = 1) {
         activeConnections.set(id, peerNodeKey);
         let closing;
+        let writeTail = Promise.resolve();
+        let pendingWriteBytes = 0;
+        let pendingWrites = 0;
+        let writeError;
+        let halfClosing;
         function close() {
             return (closing ??= call("close", { connection: id }).finally(() => {
                 activeConnections.delete(id);
@@ -128,14 +134,45 @@ export async function connectWorker(worker, options, tunnelMTU, rtc) {
             peerNodeKey,
             read: () => streamCall("read"),
             write: (bytes) => {
+                if (closing || halfClosing || closed)
+                    return Promise.reject(new Error("Connection is closed for writing"));
+                if (writeError)
+                    return Promise.reject(writeError);
+                if (pendingWrites >= 64 ||
+                    pendingWriteBytes + bytes.byteLength > 4 * 1024 * 1024)
+                    return Promise.reject(new Error("Write queue full (4 MiB / 64 writes); use smaller chunks and await previous writes"));
                 // Structured clone copies a view's entire backing ArrayBuffer. Copy
                 // only this write, then transfer it without detaching the caller's data.
                 // Buffer.slice() is a view, unlike Uint8Array.slice(). Always allocate
                 // a plain Uint8Array so Node buffers retain ownership of their memory.
                 const owned = new Uint8Array(bytes);
-                return streamCall("write", { bytes: owned }, [owned.buffer]);
+                const size = owned.byteLength;
+                pendingWriteBytes += size;
+                const first = pendingWrites++ === 0;
+                const submit = () => {
+                    if (writeError)
+                        return Promise.reject(writeError);
+                    return streamCall("write", { bytes: owned }, [owned.buffer]);
+                };
+                const result = (first ? submit() : writeTail.then(submit))
+                    .catch((error) => {
+                    writeError = error;
+                    throw error;
+                })
+                    .finally(() => {
+                    pendingWriteBytes -= size;
+                    pendingWrites--;
+                });
+                // Retain the original rejection for the caller, while the queue has a
+                // handled tail even if no later write or half-close is submitted.
+                writeTail = result.catch(() => { });
+                return result;
             },
-            closeWrite: () => streamCall("closeWrite"),
+            closeWrite: () => (halfClosing ??= writeTail.then(() => {
+                if (writeError)
+                    throw writeError;
+                return streamCall("closeWrite");
+            })),
             close,
         };
     }
@@ -194,12 +231,16 @@ export async function connectWorker(worker, options, tunnelMTU, rtc) {
         throw new Error("Transport closed");
     return {
         getTransportStats: async () => (rtc ? rtc.stats() : []),
-        /** Disabling restores DERP; re-enabling applies to subsequent connections. */
+        /** Disabling restores DERP; re-enabling resumes existing upgrade loops and enables future connections. */
         setWebRTCEnabled: (enabled) => {
             if (closed || !rtc)
                 return;
-            rtc.setEnabled(enabled);
-            post({ method: "webRTCEnabled", args: { enabled } });
+            try {
+                rtc.setEnabled(enabled);
+            }
+            finally {
+                post({ method: "webRTCEnabled", args: { enabled } });
+            }
         },
         /** Generate native keys locally, without a listener, DERP map or network connection. */
         createIdentity: () => call("createIdentity"),

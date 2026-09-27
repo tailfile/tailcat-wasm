@@ -1,122 +1,42 @@
-import test, { type TestContext } from "node:test";
+import { test, vi } from "vitest";
 import assert from "node:assert/strict";
-import { createWebRTC } from "../src/webrtc.ts";
-import { deferred, tick } from "./helpers.ts";
+import {
+  RTC_ACK,
+  RTC_DATA,
+  RTC_PROBE,
+  RTC_QUEUE_LIMIT,
+  rtcFrame,
+} from "../src/rtc-protocol.ts";
+import { tick } from "./helpers.ts";
 
-class Channel {
-  label = "wireguard";
-  ordered = false;
-  maxRetransmits = 0;
-  readyState = "open";
-  bufferedAmount = 0;
-  sent: unknown[] = [];
-  failure?: Error;
-  onmessage?: (event: { data: unknown }) => void;
-  onopen?: () => void;
-  onclose?: () => void;
-  onerror?: () => void;
-  onbufferedamountlow?: () => void;
-  send(value: unknown) {
-    if (this.failure) throw this.failure;
-    this.sent.push(value);
-  }
-  close() {
-    this.readyState = "closed";
-    this.onclose?.();
-  }
-  receive(data: unknown) {
-    this.onmessage?.({ data });
-  }
-}
-interface RTCMessage {
-  session: number;
-  kind: string;
-  value?: unknown;
-}
-function fixture(
-  t: TestContext,
-  options: {
-    failChannel?: boolean;
-    delayedOffer?: boolean;
-    enabled?: boolean;
-  } = {},
-) {
-  t.mock.timers.enable({ apis: ["setInterval", "Date"], now: 100_000 });
-  const offer = deferred<RTCSessionDescriptionInit>();
-  const messages: RTCMessage[] = [];
-  const peers: Peer[] = [];
-  class Peer {
-    channel = new Channel();
-    closed = false;
-    connectionState = "new";
-    sctp = { maxMessageSize: 65536 };
-    localDescription?: RTCSessionDescriptionInit;
-    remoteDescription?: RTCSessionDescriptionInit;
-    addedCandidates: RTCIceCandidateInit[] = [];
-    report = new Map<string, Record<string, unknown>>();
-    onicecandidate?: (event: {
-      candidate: { toJSON(): RTCIceCandidateInit } | null;
-    }) => void;
-    ondatachannel?: (event: { channel: Channel }) => void;
-    onconnectionstatechange?: () => void;
-    constructor() {
-      peers.push(this);
+import { rtcFixture as fixture, Channel } from "./rtc-fixture.ts";
+
+for (const action of ["remote", "disable", "close"] as const) {
+  test(`a throwing observer cannot prevent ${action} from releasing RTC resources`, async (t) => {
+    const f = fixture(t);
+    const first = f.start();
+    await f.activate(first);
+    if (action !== "remote") f.start(true, 2);
+    await tick();
+    const failure = new Error("observer failed");
+    f.rtc.onChange(() => { throw failure; });
+    assert.throws(() => {
+      if (action === "remote") f.handle("closed");
+      else if (action === "disable") f.rtc.setEnabled(false);
+      else f.rtc.close();
+    }, (error) => error === failure);
+    for (const pc of f.peers) {
+      assert.equal(pc.closed, true);
+      assert.equal(pc.channel.readyState, "closed");
     }
-    createDataChannel() {
-      if (options.failChannel) throw new Error("SCTP unavailable");
-      return this.channel;
-    }
-    async createOffer() {
-      return options.delayedOffer
-        ? offer.promise
-        : { type: "offer" as const, sdp: "offer" };
-    }
-    async createAnswer() {
-      return { type: "answer" as const, sdp: "answer" };
-    }
-    async setLocalDescription(description: RTCSessionDescriptionInit) {
-      this.localDescription = description;
-    }
-    async setRemoteDescription(description: RTCSessionDescriptionInit) {
-      this.remoteDescription = description;
-    }
-    async addIceCandidate(candidate: RTCIceCandidateInit) {
-      this.addedCandidates.push(candidate);
-    }
-    async getStats() {
-      return this.report;
-    }
-    close() {
-      this.closed = true;
-    }
-  }
-  const descriptor = Object.getOwnPropertyDescriptor(
-    globalThis,
-    "RTCPeerConnection",
-  );
-  Object.defineProperty(globalThis, "RTCPeerConnection", {
-    configurable: true,
-    value: Peer,
+    assert.equal(f.messages.filter((m) => m.kind === "closed").length, f.peers.length);
+    assert(f.messages.some((m) => m.session === 1 && m.kind === "ready" && m.value === false));
+    assert(f.rtc.snapshot().every((path) => path.state === "derp"));
+    const count = f.messages.length;
+    vi.advanceTimersByTime(20_000);
+    await tick();
+    assert.equal(f.messages.length, count, "closed sessions leave no active heartbeat");
   });
-  const rtc = createWebRTC(
-    {},
-    (message) => messages.push(message.args as RTCMessage),
-    options.enabled ?? true,
-  );
-  t.after(() => {
-    rtc.close();
-    if (descriptor)
-      Object.defineProperty(globalThis, "RTCPeerConnection", descriptor);
-    else Reflect.deleteProperty(globalThis, "RTCPeerConnection");
-  });
-  function handle(kind: string, value?: unknown, session = 1) {
-    rtc.handle({ session, kind, value });
-  }
-  function start(initiator = true, session = 1) {
-    handle("start", { initiator, peerNodeKey: `peer-${session}` }, session);
-    return peers.at(-1)!;
-  }
-  return { rtc, peers, messages, offer, handle, start };
 }
 
 test("partial WebRTC startup failure closes the peer instead of leaking a heartbeat and slot", (t) => {
@@ -158,13 +78,16 @@ test("duplicate start cannot replace a live session and orphan its peer", async 
   await tick();
 });
 
-for (const event of ["open", "ping"] as const) {
-  test(`a failed ${event} response closes the path and falls back without an uncaught exception`, (t) => {
+for (const event of ["open", "probe"] as const) {
+  test(`a failed ${event} response closes the path without an uncaught exception`, async (t) => {
     const f = fixture(t);
     const pc = f.start();
+    await f.negotiate();
     pc.channel.failure = new Error("channel closed while sending");
     assert.doesNotThrow(() =>
-      event === "open" ? pc.channel.onopen?.() : pc.channel.receive("ping"),
+      event === "open"
+        ? pc.channel.onopen?.()
+        : pc.channel.receive(rtcFrame(RTC_PROBE, 90).buffer),
     );
     assert.equal(pc.closed, true);
     assert.equal(f.rtc.snapshot()[0].state, "derp");
@@ -175,7 +98,7 @@ for (const remote of ["host", "relay"]) {
   test(`${remote} candidate classification requires a live heartbeat and selected ICE pair`, async (t) => {
     const f = fixture(t);
     const pc = f.start();
-    pc.channel.receive("pong");
+    await f.activate(pc);
     assert.equal(f.rtc.snapshot()[0].state, "connecting");
     pc.report = new Map([
       ["transport", { type: "transport", selectedCandidatePairId: "pair" }],
@@ -194,14 +117,24 @@ for (const remote of ["host", "relay"]) {
     const [stats] = await f.rtc.stats();
     assert.equal(stats.state, remote === "relay" ? "webrtc-relay" : "direct");
     assert.equal(stats.rttMS, 12);
-    t.mock.timers.tick(4000);
+    // Step the clock so each poll observes advancing time; a single large
+    // tick fires every interval at the end time and reads as a throttle gap.
+    for (let n = 0; n < 4; n++) vi.advanceTimersByTime(1000);
     assert.equal(f.rtc.snapshot()[0].state, "derp");
     assert(
       f.messages.some(
         (message) => message.kind === "ready" && message.value === false,
       ),
     );
+    // A stale receipt cannot restore a cooled-down path.
     pc.channel.receive("pong");
+    assert.equal(f.rtc.snapshot()[0].state, "derp");
+    // Cross the 5 s cooldown without leaving probes unacked long enough to
+    // trip probe-timeout and push the cooldown further out.
+    for (let n = 0; n < 5; n++) vi.advanceTimersByTime(1000);
+    f.confirmProbe(pc);
+    vi.advanceTimersByTime(250);
+    f.confirmProbe(pc);
     assert.equal(
       f.rtc.snapshot()[0].state,
       remote === "relay" ? "webrtc-relay" : "direct",
@@ -215,21 +148,23 @@ test("a channel that never opens times out and disabled WebRTC allocates no peer
   assert.equal(f.peers.length, 0);
   f.rtc.setEnabled(true);
   const pc = f.start(false, 2);
-  t.mock.timers.tick(16_000);
+  vi.advanceTimersByTime(16_000);
   assert.equal(pc.closed, true);
 });
 
-test("inbound packets are bounded until worker acknowledgments return capacity", (t) => {
+test("inbound packets are bounded until worker acknowledgments return capacity", async (t) => {
   const f = fixture(t);
   const pc = f.start();
-  for (let n = 0; n < 33; n++) pc.channel.receive(new ArrayBuffer(32768));
+  await f.activate(pc);
+  for (let n = 0; n < 33; n++)
+    pc.channel.receive(rtcFrame(RTC_DATA, n, 32768 + 8).buffer);
   assert.equal(
     f.messages.filter((message) => message.kind === "packet").length,
     32,
   );
   assert.equal(f.rtc.snapshot()[0].droppedPackets, 1);
-  f.handle("received", 32768);
-  pc.channel.receive(new ArrayBuffer(32768));
+  f.handle("received", { bytes: 32768, sequence: 0, accepted: true });
+  pc.channel.receive(rtcFrame(RTC_DATA, 9, 32768 + 8).buffer);
   assert.equal(
     f.messages.filter((message) => message.kind === "packet").length,
     33,
@@ -242,10 +177,11 @@ test("inbound packets are bounded until worker acknowledgments return capacity",
   );
 });
 
-test("closing a congested channel returns each queued worker credit exactly once", (t) => {
+test("closing a congested channel returns each queued worker credit exactly once", async (t) => {
   const f = fixture(t);
   const pc = f.start();
-  pc.channel.bufferedAmount = 1024 * 1024;
+  await f.activate(pc);
+  pc.channel.bufferedAmount = RTC_QUEUE_LIMIT;
   f.handle("packet", new Uint8Array(32768));
   f.handle("packet", new Uint8Array(16384));
   f.rtc.setEnabled(false);
@@ -260,9 +196,11 @@ test("closing a congested channel returns each queued worker credit exactly once
   assert.equal(pc.closed, true);
 });
 
-test("SCTP size limits fall back and restore credit without sending a truncated datagram", (t) => {
+test("SCTP size limits fall back and restore credit without sending a truncated datagram", async (t) => {
   const f = fixture(t);
   const pc = f.start();
+  await f.activate(pc);
+  pc.channel.sent = [];
   pc.sctp.maxMessageSize = 16384;
   f.handle("packet", new Uint8Array(32768));
   assert.equal(pc.closed, true);
@@ -282,7 +220,10 @@ test("ICE arriving before SDP is applied in order after remote description", asy
   assert.deepEqual(pc.addedCandidates, []);
   f.handle(
     "signal",
-    JSON.stringify({ description: { type: "offer", sdp: "remote" } }),
+    JSON.stringify({
+      version: 2,
+      description: { type: "offer", sdp: "remote" },
+    }),
   );
   await tick();
   assert.deepEqual(pc.addedCandidates, [
@@ -331,3 +272,128 @@ test("session and history bounds hold and stats snapshots cannot mutate internal
   stats[0].txBytes = 999;
   assert.equal(f.rtc.snapshot()[0].txBytes, 0);
 });
+
+test("small heartbeats and small packet receipts cannot hide a large-packet blackhole", async (t) => {
+  const f = fixture(t);
+  const pc = f.start();
+  await f.activate(pc);
+  f.handle("packet", new Uint8Array(8192));
+  for (let n = 0; n < 14; n++) {
+    vi.advanceTimersByTime(250);
+    f.confirmProbe(pc);
+    f.handle("packet", new Uint8Array(80));
+    const frame = pc.channel.sent.findLast(
+      (v): v is Uint8Array<ArrayBuffer> =>
+        v instanceof Uint8Array &&
+        new DataView(v.buffer).getUint32(0) === RTC_DATA &&
+        v.byteLength === 88,
+    );
+    if (frame)
+      pc.channel.receive(
+        rtcFrame(RTC_ACK, new DataView(frame.buffer).getUint32(4)).buffer,
+      );
+  }
+  assert.equal(f.rtc.snapshot()[0].state, "derp");
+  assert.equal(f.rtc.snapshot()[0].fallbackReason, "delivery-timeout");
+});
+
+test("duplicate and late probe receipts cannot qualify a path", async (t) => {
+  const f = fixture(t);
+  const pc = f.start();
+  await f.negotiate();
+  pc.channel.onopen?.();
+  f.confirmProbe(pc);
+  f.confirmProbe(pc);
+  assert(!f.messages.some((m) => m.kind === "ready" && m.value === true));
+  vi.advanceTimersByTime(250);
+  pc.connectionState = "disconnected";
+  pc.onconnectionstatechange?.();
+  f.confirmProbe(pc);
+  assert(!f.messages.some((m) => m.kind === "ready" && m.value === true));
+});
+
+test("data receipts wait for admission to Go and do not acknowledge rejected packets", async (t) => {
+  const f = fixture(t);
+  const pc = f.start();
+  await f.activate(pc);
+  pc.channel.sent = [];
+  pc.channel.receive(rtcFrame(RTC_DATA, 100, 1008).buffer);
+  vi.advanceTimersByTime(10);
+  assert.equal(pc.channel.sent.length, 0);
+  f.handle("received", { bytes: 1000, sequence: 100, accepted: false });
+  vi.advanceTimersByTime(10);
+  assert.equal(pc.channel.sent.length, 0);
+  pc.channel.receive(rtcFrame(RTC_DATA, 101, 1008).buffer);
+  f.handle("received", { bytes: 1000, sequence: 101, accepted: true });
+  vi.advanceTimersByTime(10);
+  assert.deepEqual(pc.channel.sent, [rtcFrame(RTC_ACK, 101)]);
+});
+
+test("legacy signaling retains DERP instead of interpreting raw ciphertext as version 2 frames", async (t) => {
+  const f = fixture(t);
+  const pc = f.start(false);
+  f.handle(
+    "signal",
+    JSON.stringify({ description: { type: "offer", sdp: "legacy" } }),
+  );
+  await tick();
+  assert.equal(pc.closed, true);
+  assert.equal(f.rtc.snapshot()[0].state, "derp");
+  assert.equal(f.rtc.snapshot()[0].fallbackReason, "incompatible");
+});
+
+test("sustained slow delivery falls back even while receipts keep arriving", async (t) => {
+  const f = fixture(t);
+  const pc = f.start();
+  await f.activate(pc);
+  for (let n = 0; n < 6; n++) {
+    f.handle("packet", new Uint8Array(8192));
+    const packet = pc.channel.sent.findLast(
+      (v): v is Uint8Array<ArrayBuffer> =>
+        v instanceof Uint8Array &&
+        new DataView(v.buffer).getUint32(0) === RTC_DATA,
+    );
+    assert(packet);
+    vi.advanceTimersByTime(1600);
+    f.confirmProbe(pc);
+    pc.channel.receive(
+      rtcFrame(RTC_ACK, new DataView(packet.buffer).getUint32(4)).buffer,
+    );
+  }
+  assert.equal(f.rtc.snapshot()[0].state, "derp");
+  assert.equal(f.rtc.snapshot()[0].fallbackReason, "delivery-delay");
+});
+
+test("qualification budgets WireGuard and framing overhead against the SCTP message limit", async (t) => {
+  const f = fixture(t);
+  const pc = f.start();
+  pc.sctp.maxMessageSize = 8192;
+  await f.negotiate();
+  pc.channel.onopen?.();
+  assert.equal(pc.closed, true);
+  assert.equal(f.rtc.snapshot()[0].fallbackReason, "message-size");
+  assert(!f.messages.some((m) => m.kind === "ready" && m.value === true));
+});
+
+
+for (const recovered of [false, true]) {
+  test(`ICE disconnected ${recovered ? "can recover before its deadline" : "cannot retain a session indefinitely"}`, async (t) => {
+    const f = fixture(t);
+    const pc = f.start();
+    await f.activate(pc);
+    pc.connectionState = "disconnected";
+    pc.onconnectionstatechange?.();
+    vi.advanceTimersByTime(2000);
+    assert.equal(pc.closed, false);
+    if (recovered) {
+      pc.connectionState = "connected";
+      pc.onconnectionstatechange?.();
+    }
+    vi.advanceTimersByTime(1250);
+    assert.equal(pc.closed, !recovered);
+    if (!recovered) {
+      assert.equal(f.rtc.snapshot()[0].fallbackReason, "disconnected-timeout");
+      assert.equal(f.messages.filter((m) => m.kind === "closed").length, 1);
+    }
+  });
+}

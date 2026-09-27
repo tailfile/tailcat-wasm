@@ -1,75 +1,87 @@
-import test from "node:test";
+import { test, vi } from "vitest";
 import assert from "node:assert/strict";
-import { createWebRTC } from "../src/webrtc.ts";
+import { rtcFixture } from "./rtc-fixture.ts";
+import { RTC_DATA, RTC_QUEUE_LIMIT } from "../src/rtc-protocol.ts";
 
-test("SCTP congestion retains already admitted packets and worker credits until drain", async (t) => {
-  const binary: Uint8Array[] = [];
-  const messages: any[] = [];
-  const channel: any = {
-    label: "wireguard",
-    ordered: false,
-    maxRetransmits: 0,
-    readyState: "open",
-    bufferedAmount: 1024 * 1024,
-    send(value: unknown) {
-      if (value instanceof Uint8Array) binary.push(value);
-    },
-    close() {
-      this.readyState = "closed";
-    },
-  };
-  const descriptor = Object.getOwnPropertyDescriptor(
-    globalThis,
-    "RTCPeerConnection",
-  );
-  Object.defineProperty(globalThis, "RTCPeerConnection", {
-    configurable: true,
-    value: class {
-      sctp = { maxMessageSize: 65536 };
-      createDataChannel() {
-        return channel;
-      }
-      async createOffer() {
-        return {};
-      }
-      async setLocalDescription() {}
-      async getStats() {
-        return new Map();
-      }
-      close() {}
-    },
-  });
-  const rtc = createWebRTC({}, (message) => messages.push(message));
-  t.after(() => {
-    rtc.close();
-    if (descriptor)
-      Object.defineProperty(globalThis, "RTCPeerConnection", descriptor);
-    else Reflect.deleteProperty(globalThis, "RTCPeerConnection");
-  });
-  rtc.handle({
-    session: 1,
-    kind: "start",
-    value: { initiator: true, peerNodeKey: "peer" },
-  });
-  channel.onmessage({ data: "pong" });
+test("brief SCTP congestion retains packets and credits until drain", async (t) => {
+  const f = rtcFixture(t);
+  const pc = f.start();
+  await f.activate(pc);
+  pc.channel.sent = [];
+  pc.channel.bufferedAmount = RTC_QUEUE_LIMIT;
   const packets = [
     new Uint8Array(32768).fill(1),
     new Uint8Array(32768).fill(2),
   ];
-  for (const packet of packets)
-    rtc.handle({ session: 1, kind: "packet", value: packet });
-  assert.equal(binary.length, 0);
-  assert.equal(
-    messages.filter((message) => message.args.kind === "credit").length,
-    0,
+  for (const packet of packets) f.handle("packet", packet);
+  assert.equal(pc.channel.sent.length, 0);
+  assert.equal(f.messages.filter((m) => m.kind === "credit").length, 0);
+  assert.equal((await f.rtc.stats())[0].bufferedBytes, RTC_QUEUE_LIMIT + 65536);
+  pc.channel.bufferedAmount = 0;
+  pc.channel.onbufferedamountlow?.();
+  const frames = pc.channel.sent as Uint8Array[];
+  assert(frames.every((b) => new DataView(b.buffer).getUint32(0) === RTC_DATA));
+  assert.deepEqual(
+    frames.map((b) => b.slice(8)),
+    packets,
   );
-  assert.equal((await rtc.stats())[0].bufferedBytes, 1024 * 1024 + 65536);
-  channel.bufferedAmount = 0;
-  channel.onbufferedamountlow();
-  assert.deepEqual(binary, packets);
+  assert.equal(f.messages.filter((m) => m.kind === "credit").length, 2);
+  assert.equal(f.rtc.snapshot()[0].droppedPackets, 0);
+});
+
+test("reserved RTC headroom survives queueing and frames ciphertext in its owned buffer", async (t) => {
+  const f = rtcFixture(t);
+  const pc = f.start();
+  await f.activate(pc);
+  pc.channel.sent = [];
+  pc.channel.bufferedAmount = RTC_QUEUE_LIMIT;
+  const buffer = new ArrayBuffer(8 + 1024);
+  const packet = new Uint8Array(buffer, 8).fill(37);
+  f.handle("packet", packet);
+  assert.equal(pc.channel.sent.length, 0);
+  pc.channel.bufferedAmount = 0;
+  pc.channel.onbufferedamountlow?.();
+  const frame = pc.channel.sent[0] as Uint8Array;
+  assert.equal(frame.buffer, buffer);
+  assert.equal(new DataView(buffer).getUint32(0), RTC_DATA);
+  assert.deepEqual(frame.subarray(8), new Uint8Array(1024).fill(37));
   assert.equal(
-    messages.filter((message) => message.args.kind === "credit").length,
-    2,
+    f.messages.filter((m) => m.kind === "credit").at(-1)?.value,
+    1024,
   );
-  assert.equal((await rtc.stats())[0].droppedPackets, 0);
+});
+
+test("a stalled queue falls back, releases credits, and never flushes stale packets", async (t) => {
+  const f = rtcFixture(t);
+  const pc = f.start();
+  await f.activate(pc);
+  pc.channel.sent = [];
+  pc.channel.bufferedAmount = RTC_QUEUE_LIMIT;
+  f.handle("packet", new Uint8Array(32768));
+  vi.advanceTimersByTime(2400);
+  assert.equal(f.rtc.snapshot()[0].state, "derp");
+  assert.equal(f.rtc.snapshot()[0].fallbackReason, "congestion");
+  assert.equal(f.messages.filter((m) => m.kind === "credit").length, 1);
+  pc.channel.bufferedAmount = 0;
+  pc.channel.onbufferedamountlow?.();
+  assert(
+    !pc.channel.sent.some(
+      (v) =>
+        v instanceof Uint8Array &&
+        new DataView(v.buffer).getUint32(0) === RTC_DATA,
+    ),
+  );
+});
+
+test("probe replies cannot grow a full SCTP buffer", async (t) => {
+  const f = rtcFixture(t);
+  const pc = f.start();
+  await f.activate(pc);
+  pc.channel.sent = [];
+  pc.channel.bufferedAmount = RTC_QUEUE_LIMIT;
+  const { RTC_PROBE, rtcFrame } = await import("../src/rtc-protocol.ts");
+  for (let n = 0; n < 100; n++)
+    pc.channel.receive(rtcFrame(RTC_PROBE, n).buffer);
+  assert.equal(pc.channel.sent.length, 0);
+  assert.equal(pc.closed, false);
 });

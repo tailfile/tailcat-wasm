@@ -23,6 +23,7 @@ import {
   goVersion,
   tailcatVersion,
   tailscaleVersion,
+  xcryptoVersion,
   flags,
   fingerprint,
 } from "./build-inputs.ts";
@@ -75,7 +76,7 @@ if (previous.fingerprint === inputHash) {
 }
 if (!wasm) {
   console.log(
-    `Building the browser adapter with local packet-path forks of Tailcat ${tailcatVersion} and Tailscale ${tailscaleVersion}…`,
+    `Building the browser adapter with local packet-path forks of Tailcat ${tailcatVersion}, Tailscale ${tailscaleVersion} and x/crypto ${xcryptoVersion}…`,
   );
   const temporary = mkdtempSync(join(tmpdir(), "tailcat-wasm-build-"));
   try {
@@ -135,6 +136,7 @@ writeFileSync(
     {
       tailcat: tailcatVersion,
       tailscale: tailscaleVersion,
+      xcrypto: xcryptoVersion,
       go: goVersion,
       entrypoint: "wasm/main_js.go",
       fingerprint: inputHash,

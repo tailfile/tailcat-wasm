@@ -13,6 +13,7 @@ export interface TailcatConnection {
     readonly peerNodeKey: string;
     /** Only one read may be pending per stream; overlapping reads reject. */
     read(): Promise<Uint8Array | null>;
+    /** Writes are ordered. At most 4 MiB / 64 writes may be pending; await writes for backpressure. */
     write(bytes: Uint8Array): Promise<void>;
     closeWrite(): Promise<void>;
     close(): Promise<void>;
@@ -28,7 +29,7 @@ export interface ListenerIdentity extends TransportIdentity {
 }
 export interface ListenOptions {
     privateKeyJSON?: string;
-    /** Move the existing identity to a selected relay region without rotating its keys. */
+    /** Select a relay region for a new or existing identity without rotating saved keys. */
     regionID?: number;
 }
 export interface TailcatOptions {
@@ -36,7 +37,7 @@ export interface TailcatOptions {
     webRTC?: false | WebRTCOptions;
     signal?: AbortSignal;
     assetsURL?: string;
-    /** Inner tunnel MTU, from 1280 to 32768; also carried as WebRTC messages. */
+    /** Inner tunnel MTU, default 8192, from 1280 to 32768; also carried as WebRTC messages. */
     tunnelMTU?: number;
     onConnection(connection: TailcatConnection): void;
     /** Active authenticated peers only; closing the last stream removes a peer. */
@@ -52,7 +53,7 @@ export interface WorkerPort {
 export declare function validateOptions(options: TailcatOptions): number;
 export declare function connectWorker(worker: WorkerPort, options: TailcatOptions, tunnelMTU: number, rtc?: WebRTCManager): Promise<{
     getTransportStats: () => Promise<never[] | import("./webrtc.js").TransportStats[]>;
-    /** Disabling restores DERP; re-enabling applies to subsequent connections. */
+    /** Disabling restores DERP; re-enabling resumes existing upgrade loops and enables future connections. */
     setWebRTCEnabled: (enabled: boolean) => void;
     /** Generate native keys locally, without a listener, DERP map or network connection. */
     createIdentity: () => Promise<TransportIdentity>;

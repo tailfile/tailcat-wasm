@@ -14,7 +14,9 @@
     "outDir": "dist",
     "types": [
       "node"
-    ]
+    ],
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
   },
   "include": [
     "src/**/*.ts"

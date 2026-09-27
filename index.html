@@ -6,23 +6,27 @@
     <meta name="color-scheme" content="light dark" />
     <meta
       name="description"
-      content="Try encrypted browser-to-browser streams with Tailcat WASM. See WebRTC direct paths and DERP relay fallback live."
+      content="Try TailWASM: encrypted browser-to-browser streams with WebRTC direct connections and automatic DERP fallback."
     />
-    <title>Tailcat WASM · Browser demo</title>
+    <title>TailWASM Demo · WebRTC direct, DERP fallback</title>
     <style>
       :root {
         color-scheme: light dark;
         font:
-          100%/1.5 -apple-system,
+          14px/1.55 -apple-system,
           BlinkMacSystemFont,
           "Segoe UI",
           sans-serif;
-        color: light-dark(#202127, #f1f2f5);
-        background: light-dark(#f5f6f8, #111216);
-        --muted: light-dark(#606573, #abb0bd);
-        --surface: light-dark(#fff, #1c1e24);
-        --border: light-dark(#dddfe6, #373a46);
-        --blue: light-dark(#0758cf, #7ab4ff);
+        color: light-dark(#24332f, #e1ebe6);
+        background: light-dark(#f3f5f2, #101815);
+        --muted: light-dark(#64736c, #a1b2a8);
+        --surface: light-dark(#ffffff, #19231e);
+        --inset: light-dark(#f6f8f5, #121c17);
+        --border: light-dark(#dce4dd, #334139);
+        --accent: light-dark(#176a50, #8bd5b2);
+        --button: light-dark(#176a50, #86cfac);
+        --button-text: light-dark(#fff, #10251b);
+        --mono: ui-monospace, "SFMono-Regular", Consolas, monospace;
       }
       * {
         box-sizing: border-box;
@@ -31,259 +35,403 @@
         margin: 0;
       }
       main {
-        max-width: 62rem;
+        max-width: 1160px;
         margin: auto;
-        padding: 3rem 1.5rem 2rem;
+        padding: 0 32px 24px;
+      }
+      .brand-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 24px 0;
+        border-bottom: 1px solid var(--border);
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 18px;
+        font-weight: 750;
+        letter-spacing: -0.6px;
+      }
+      .brand svg {
+        width: 30px;
+        height: 30px;
+        padding: 5px;
+        background: var(--accent);
+        color: var(--surface);
+        border-radius: 8px;
+      }
+      .brand span {
+        font-weight: 450;
+        color: var(--muted);
+      }
+      .edition {
+        color: var(--muted);
+        font: 11px var(--mono);
+        letter-spacing: 0.06em;
       }
       header {
-        margin-bottom: 2rem;
-      }
-      .eyebrow {
-        color: var(--blue);
-        font-size: 0.75rem;
-        font-weight: 700;
-        letter-spacing: 0.12em;
-      }
-      .eyebrow span {
-        color: var(--muted);
-        margin-left: 0.6rem;
-        font-weight: 500;
+        padding: 32px 0 28px;
       }
       h1 {
-        font-size: clamp(2rem, 5.4vw, 3rem);
-        line-height: 1.08;
-        letter-spacing: -0.04em;
-        margin: 0.9rem 0 1rem;
-      }
-      h2 {
-        display: flex;
-        gap: 0.65rem;
-        align-items: center;
-        font-size: 1.05rem;
-        line-height: 1.3;
-        letter-spacing: -0.015em;
-        margin: 0;
-      }
-      p {
-        margin: 0.9rem 0;
+        margin: 0 0 10px;
+        font-size: clamp(27px, 4vw, 38px);
+        line-height: 1.2;
+        font-weight: 650;
+        letter-spacing: -1.3px;
       }
       .intro {
         color: var(--muted);
-        max-width: 37rem;
+        max-width: 640px;
+        margin: 0;
+      }
+      h2 {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 15px;
+        font-weight: 650;
+        margin: 0;
+        letter-spacing: -0.2px;
+      }
+      h3 {
+        font-size: 14px;
+        font-weight: 650;
+        margin: 0 0 12px;
+      }
+      p {
+        margin: 12px 0;
+      }
+      .card,
+      #setup-panel {
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--surface);
+      }
+      .card {
+        padding: 24px;
+        min-width: 0;
+      }
+      #setup-panel {
+        margin: 0 0 20px;
+        overflow: hidden;
+      }
+      #setup-summary {
+        padding: 14px 22px;
+        font-size: 12px;
+        font-weight: 650;
+        color: var(--muted);
+      }
+      #setup-panel[open] > summary {
+        border-bottom: 1px solid var(--border);
       }
       .setup {
         display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 1rem;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
       }
-      .card {
-        padding: 1.5rem;
-        border: 1px solid var(--border);
-        background: var(--surface);
-        border-radius: 1.25rem;
-        margin-bottom: 1rem;
+      .setup .card {
+        border: 0;
+        border-radius: 0;
+      }
+      .setup .card + .card {
+        border-left: 1px solid var(--border);
+      }
+      .setup h2 {
+        min-height: 40px;
       }
       .step {
         display: inline-grid;
         place-items: center;
+        width: 24px;
+        height: 24px;
+        border-radius: 6px;
+        background: var(--inset);
         border: 1px solid var(--border);
-        border-radius: 50%;
-        width: 1.65rem;
-        height: 1.65rem;
-        font-size: 0.8rem;
         color: var(--muted);
+        font: 11px var(--mono);
+      }
+      #status {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .workspace {
+        display: grid;
+        grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.65fr);
+        gap: 20px;
+        align-items: start;
       }
       .row,
       .section-head,
       .toggle-row {
         display: flex;
         align-items: center;
-        gap: 0.75rem;
+        gap: 10px;
       }
       .section-head {
         justify-content: space-between;
         flex-wrap: wrap;
       }
-      .toggle-row {
-        justify-content: space-between;
+      .section-head > .row {
         flex-wrap: wrap;
-        border-top: 1px solid var(--border);
-        padding-top: 1rem;
       }
       .caption,
       small,
       footer {
         color: var(--muted);
-        font-size: 0.8rem;
-        line-height: 1.5;
+        font-size: 12px;
+        line-height: 1.6;
       }
       label {
         display: block;
-        font-size: 0.85rem;
+        font-size: 12px;
         font-weight: 600;
-        margin: 1rem 0 0.4rem;
+        margin: 16px 0 8px;
       }
       input,
       textarea,
+      select,
       button {
         font: inherit;
       }
       input:not([type="checkbox"]),
+      select,
       textarea {
         display: block;
         width: 100%;
         min-width: 0;
-        padding: 0.7rem 0.85rem;
-        background: light-dark(#fbfcfe, #14161c);
+        padding: 12px;
         color: inherit;
+        background: var(--inset);
         border: 1px solid var(--border);
-        border-radius: 0.6rem;
+        border-radius: 7px;
       }
       textarea {
         resize: vertical;
-        font:
-          0.8rem/1.5 ui-monospace,
-          monospace;
-        margin-bottom: 0.75rem;
+        font: 12px/1.6 var(--mono);
         overflow-wrap: anywhere;
       }
       textarea:read-only {
         color: var(--muted);
       }
       button {
-        min-height: 2.75rem;
-        padding: 0.6rem 1rem;
+        flex: none;
+        white-space: nowrap;
+        min-height: 40px;
+        padding: 9px 14px;
         border: 1px solid var(--border);
-        border-radius: 0.65rem;
-        background: var(--surface);
+        border-radius: 7px;
         color: inherit;
-        font-size: 0.85rem;
+        background: var(--surface);
+        font-size: 12px;
         font-weight: 600;
+        line-height: 1.4;
         cursor: pointer;
         touch-action: manipulation;
       }
-      button.primary {
-        background: #075bd8;
-        border-color: #075bd8;
-        color: white;
+      button.primary,
+      #probe {
+        background: var(--button);
+        border-color: var(--button);
+        color: var(--button-text);
+      }
+      button:hover:not(:disabled) {
+        filter: brightness(0.94);
+      }
+      button:active:not(:disabled) {
+        filter: brightness(0.88);
       }
       button:disabled {
         opacity: 0.45;
         cursor: default;
       }
-      button:active:not(:disabled) {
-        transform: scale(0.97);
-      }
       :focus-visible {
-        outline: 3px solid var(--blue);
+        outline: 2px solid var(--accent);
         outline-offset: 3px;
       }
+      .field-control {
+        overflow: hidden;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--inset);
+      }
+      .field-control textarea {
+        border: 0;
+        border-radius: 0;
+        margin: 0;
+        min-height: 80px;
+      }
+      .field-control .row {
+        flex-wrap: wrap;
+        padding: 8px;
+      }
+      .field-control:focus-within,
+      .message-form:focus-within {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+      .field-control textarea:focus-visible,
+      .message-form input:focus-visible {
+        outline: none;
+      }
       details {
-        margin-top: 1rem;
-      }
-      #setup-panel {
-        margin: 0 0 1rem;
-      }
-      #setup-summary {
-        padding: 0.6rem 0.2rem;
-        font-size: 0.9rem;
+        margin-top: 16px;
       }
       summary {
         color: var(--muted);
         cursor: pointer;
-        font-size: 0.8rem;
-        padding: 0.3rem 0;
+        font-size: 12px;
+        padding: 4px 0;
+      }
+      a {
+        color: var(--accent);
+        text-underline-offset: 3px;
       }
       .badge {
-        padding: 0.35rem 0.7rem;
-        border-radius: 2rem;
-        font-size: 0.8rem;
-        font-weight: 650;
-        background: light-dark(#edf0f5, #2b2f39);
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 5px 8px;
+        border-radius: 5px;
+        font-size: 11px;
+        font-weight: 600;
+        background: var(--inset);
+        color: var(--muted);
+      }
+      .badge::before {
+        content: "";
+        width: 6px;
+        height: 6px;
+        flex: none;
+        border-radius: 50%;
+        background: currentColor;
       }
       .badge[data-state="direct"] {
-        background: light-dark(#e4f5eb, #123e2d);
-        color: light-dark(#116234, #87e3af);
+        background: light-dark(#e4f3ea, #223b2d);
+        color: light-dark(#216343, #99ddb3);
       }
       .badge[data-state="derp"],
       .badge[data-state="webrtc-relay"] {
-        background: light-dark(#fff2d8, #45351c);
-        color: light-dark(#86510b, #f1c27b);
+        background: light-dark(#fff2db, #3b3220);
+        color: light-dark(#805c18, #e5c783);
       }
       .metrics {
-        display: grid;
-        grid-template-columns: 1fr 1fr 1fr;
-        gap: 1rem;
-        margin: 1.5rem 0;
+        margin: 20px 0;
+      }
+      .metrics > div {
+        padding: 14px 0;
+        border-top: 1px solid var(--border);
       }
       .metrics span {
         color: var(--muted);
-        font-size: 0.8rem;
+        font-size: 12px;
       }
       .metrics strong {
         display: block;
-        font-size: 1.2rem;
-        font-weight: 600;
-        letter-spacing: -0.025em;
+        font: 20px/1.5 var(--mono);
         font-variant-numeric: tabular-nums;
-        margin: 0.25rem 0;
+        overflow-wrap: anywhere;
+        margin: 5px 0;
       }
       .metrics small {
         display: block;
+        font-size: 11px;
+      }
+      .toggle-row {
+        align-items: start;
+        flex-direction: column;
+        gap: 4px;
+        border-top: 1px solid var(--border);
+        padding-top: 18px;
+      }
+      .toggle {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0;
+        font-weight: 500;
+      }
+      input[type="checkbox"] {
+        width: 16px;
+        height: 16px;
+        accent-color: var(--accent);
       }
       .test-meters {
         display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 1.5rem;
-        margin: 1.25rem 0;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 24px;
+        margin: 24px 0 16px;
+        padding: 22px;
+        background: var(--inset);
+        border-radius: 8px;
+      }
+      .test-meters > div {
+        min-width: 0;
       }
       .test-meters span,
       .test-meters small {
         display: block;
         color: var(--muted);
+        font-size: 11px;
       }
       .test-meters strong {
         display: block;
-        font-size: 1.6rem;
+        font: 25px/1.5 var(--mono);
+        letter-spacing: -1px;
         font-variant-numeric: tabular-nums;
-        margin: 0.4rem 0;
-      }
-      .test-meters progress {
-        display: block;
-        width: 100%;
-        height: 0.6rem;
-        margin-bottom: 0.6rem;
-        accent-color: var(--blue);
-      }
-      .metrics strong {
-        font-size: 1rem;
+        margin: 8px 0;
         overflow-wrap: anywhere;
       }
-      .toggle {
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-        margin: 0;
-        font-weight: 500;
+      progress {
+        appearance: none;
+        display: block;
+        width: 100%;
+        height: 4px;
+        border: 0;
+        border-radius: 4px;
+        overflow: hidden;
+        margin: 12px 0;
+        background: var(--border);
+        accent-color: var(--accent);
       }
-      input[type="checkbox"] {
-        width: 1.15rem;
-        height: 1.15rem;
-        accent-color: #075bd8;
+      progress::-webkit-progress-bar {
+        background: var(--border);
+      }
+      progress::-webkit-progress-value {
+        background: var(--accent);
+        border-radius: 4px;
+      }
+      progress::-moz-progress-bar {
+        background: var(--accent);
+        border-radius: 4px;
+      }
+      .conversation {
+        margin-top: 24px;
+        padding-top: 22px;
+        border-top: 1px solid var(--border);
       }
       .message-form {
-        margin-top: 1rem;
+        gap: 4px;
+        padding: 5px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--inset);
       }
       .message-form input {
         flex: 1;
+        border: 0;
+        background: transparent;
+        font-size: 13px;
       }
       ol {
         list-style: none;
         padding: 0;
         margin-bottom: 0;
+        max-height: 300px;
+        overflow: auto;
       }
       li {
-        padding: 0.8rem 0;
+        padding: 12px 0;
         border-bottom: 1px solid var(--border);
         overflow-wrap: anywhere;
         white-space: pre-wrap;
@@ -294,25 +442,37 @@
       li span {
         display: block;
         color: var(--muted);
-        font-size: 0.75rem;
-        margin-bottom: 0.2rem;
+        font: 10px/1.6 var(--mono);
+        margin-bottom: 4px;
+      }
+      #empty {
+        text-align: center;
+        padding: 18px 0 4px;
       }
       #error {
-        padding: 1rem;
+        padding: 14px;
         border: 1px solid light-dark(#d75656, #b74c4c);
         color: light-dark(#a91e27, #ff999d);
-        border-radius: 0.7rem;
+        border-radius: 8px;
         overflow-wrap: anywhere;
       }
       #mode-note:empty {
         display: none;
       }
-      footer {
-        text-align: center;
-        padding: 0.5rem 1rem;
+      #copy-debug {
+        margin-top: 8px;
       }
-      footer a {
-        color: var(--muted);
+      footer {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 24px 0 0;
+        font-size: 11px;
+      }
+      footer p {
+        margin: 0;
       }
       [hidden] {
         display: none !important;
@@ -324,34 +484,58 @@
         overflow: hidden;
         clip-path: inset(50%);
       }
-      @media (max-width: 640px) {
-        main {
-          padding: 1.5rem 1rem;
-        }
-        .test-meters {
+      @media (max-width: 850px) {
+        .workspace {
           grid-template-columns: 1fr;
-          gap: 1rem;
+        }
+        .metrics {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 16px;
+        }
+      }
+      @media (max-width: 580px) {
+        main {
+          padding: 0 16px 20px;
+        }
+        .brand-bar {
+          padding: 18px 0;
+        }
+        .edition {
+          font-size: 10px;
+        }
+        header {
+          padding: 24px 0;
         }
         .setup {
           grid-template-columns: 1fr;
-          gap: 0;
+        }
+        .setup .card + .card {
+          border-left: 0;
+          border-top: 1px solid var(--border);
         }
         .card {
-          padding: 1.15rem;
+          padding: 18px;
         }
         .metrics {
-          grid-template-columns: 1fr 1fr;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 12px;
         }
         .metrics > :last-child {
           grid-column: 1 / -1;
         }
-        .section-head {
-          align-items: flex-start;
+        .test-meters {
+          padding: 16px;
+          gap: 16px;
         }
-      }
-      @media (prefers-reduced-motion: reduce) {
-        button:active:not(:disabled) {
-          transform: none;
+        .test-meters strong {
+          font-size: 19px;
+        }
+        .test-meters small {
+          overflow-wrap: anywhere;
+        }
+        button {
+          min-height: 44px;
         }
       }
       @media (prefers-contrast: more) {
@@ -364,12 +548,25 @@
   </head>
   <body>
     <main>
+      <div class="brand-bar">
+        <div class="brand">
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            aria-hidden="true"
+          >
+            <path d="M4 8h16m-4-4 4 4-4 4M20 16H4m4-4-4 4 4 4" /></svg
+          >TailWASM <span>/ demo</span>
+        </div>
+        <span class="edition">EXPERIMENTAL</span>
+      </div>
       <header>
-        <p class="eyebrow">TAILCAT WASM <span>SDK DEMO</span></p>
-        <h1>Two browsers.<br />One encrypted connection.</h1>
+        <h1>WebRTC direct. DERP fallback.</h1>
         <p class="intro">
-          Your address is prepared automatically. Open this page on another
-          device, paste either address, and connect.
+          Connect browsers with encrypted streams. Use WebRTC for a direct
+          connection, with automatic DERP fallback when needed.
         </p>
       </header>
 
@@ -377,24 +574,30 @@
         <summary id="setup-summary">Connection setup</summary>
         <div class="setup">
           <section class="card" aria-labelledby="local-heading">
-            <h2 id="local-heading"><span class="step">1</span> This browser</h2>
-            <p id="status" role="status">Preparing your temporary address…</p>
-            <div class="row">
-              <button id="start" class="primary" hidden>Start again</button>
-              <button id="stop" hidden>Stop</button>
+            <div class="section-head">
+              <h2 id="local-heading">
+                <span class="step">1</span> This browser
+              </h2>
+              <div class="row">
+                <button id="start" class="primary" hidden>Start again</button>
+                <button id="stop" hidden>Stop</button>
+              </div>
             </div>
+            <p id="status" role="status">Preparing your temporary address…</p>
             <div id="local" hidden>
               <label for="address">Your address</label>
-              <textarea
-                id="address"
-                rows="2"
-                readonly
-                spellcheck="false"
-                aria-describedby="address-help"
-              ></textarea>
-              <div class="row">
-                <button id="copy">Copy address</button
-                ><span id="copy-status" role="status"></span>
+              <div class="field-control">
+                <textarea
+                  id="address"
+                  rows="2"
+                  readonly
+                  spellcheck="false"
+                  aria-describedby="address-help"
+                ></textarea>
+                <div class="row">
+                  <button id="copy">Copy address</button
+                  ><span id="copy-status" role="status"></span>
+                </div>
               </div>
               <p id="address-help" class="caption">
                 Share with the person you want to test with. Keys live only in
@@ -403,6 +606,12 @@
             </div>
             <details id="settings">
               <summary>Relay settings</summary>
+              <label for="map-preset">DERP map</label>
+              <select id="map-preset">
+                <option value="tailcat">Tailcat (default)</option>
+                <option value="tailscale">Tailscale</option>
+                <option value="custom">Custom URL…</option>
+              </select>
               <label for="map">DERP map URL</label>
               <input
                 id="map"
@@ -411,7 +620,9 @@
                 spellcheck="false"
               />
               <p class="caption">
-                Use the public Tailcat map or a CORS-enabled map for your relay.
+                Use the public Tailcat map, the Tailscale relay map, or a
+                CORS-enabled custom map. Custom maps must allow cross-origin
+                reads from this page.
               </p>
             </details>
           </section>
@@ -420,19 +631,22 @@
             <h2 id="peer-heading">
               <span class="step">2</span> Connect a browser
             </h2>
+            <p class="caption">Use an address from another browser or device.</p>
             <form id="connect-form">
               <label for="peer-address">Their address</label>
-              <textarea
-                id="peer-address"
-                rows="3"
-                placeholder="Paste an address from the other browser"
-                maxlength="2048"
-                required
-                spellcheck="false"
-              ></textarea>
-              <div class="row">
-                <button id="connect" class="primary" disabled>Connect</button>
-                <button id="cancel" type="button" hidden>Cancel</button>
+              <div class="field-control">
+                <textarea
+                  id="peer-address"
+                  rows="3"
+                  placeholder="Paste an address from the other browser"
+                  maxlength="2048"
+                  required
+                  spellcheck="false"
+                ></textarea>
+                <div class="row">
+                  <button id="connect" class="primary" disabled>Connect</button>
+                  <button id="cancel" type="button" hidden>Cancel</button>
+                </div>
               </div>
             </form>
             <p class="caption">
@@ -445,145 +659,152 @@
 
       <p id="error" role="alert" hidden></p>
 
-      <section class="card transport" aria-labelledby="transport-heading">
-        <div class="section-head">
-          <h2 id="transport-heading">Live transport</h2>
-          <div class="row">
-            <span id="route" class="badge" data-state="idle" role="status"
-              >No peer connected</span
-            >
-            <button id="disconnect" hidden>Disconnect</button>
+      <div class="workspace">
+        <section class="card transport" aria-labelledby="transport-heading">
+          <div class="section-head">
+            <h2 id="transport-heading">Live transport</h2>
+            <div class="row">
+              <span id="route" class="badge" data-state="idle" role="status"
+                >No peer connected</span
+              >
+              <button id="disconnect" hidden>Disconnect</button>
+            </div>
           </div>
-        </div>
-        <p id="route-detail" class="caption">
-          Connections start through DERP and attempt a WebRTC upgrade.
-        </p>
-        <div class="metrics">
-          <div>
-            <span>WebRTC upload / download</span
-            ><strong id="rtc-rate">—</strong> <small id="rtc-traffic">—</small
-            ><small>Total sent / received</small>
-          </div>
-          <div>
-            <span>DERP upload / download</span
-            ><strong id="derp-rate">—</strong> <small id="derp-traffic">—</small
-            ><small>Total sent / received</small>
-          </div>
-          <div>
-            <span>ICE round trip</span><strong id="rtt">—</strong
-            ><small id="candidates">No selected candidate pair</small>
-          </div>
-        </div>
-        <div class="toggle-row">
-          <label class="toggle"
-            ><input id="webrtc" type="checkbox" checked /> Allow WebRTC direct
-            paths</label
-          >
-          <span class="caption"
-            >Turn off to move an active stream to DERP.</span
-          >
-        </div>
-        <p id="mode-note" class="caption" role="status"></p>
-        <details id="webrtc-debug">
-          <summary>WebRTC debugging</summary>
-          <p class="caption">
-            Open Chrome’s diagnostics in another tab before connecting. Select
-            this demo’s PeerConnection, then inspect data-channel and
-            candidate-pair statistics. Regular DevTools Network shows DERP
-            WebSockets, not WebRTC DataChannel packets.
+          <p id="route-detail" class="caption">
+            Connections start through DERP and attempt a WebRTC upgrade.
           </p>
-          <label for="debug-address">Chrome diagnostics address</label>
-          <input
-            id="debug-address"
-            readonly
-            value="chrome://webrtc-internals"
-          />
-          <div class="row">
-            <button id="copy-debug">Copy debug page address</button
-            ><span id="debug-status" role="status"></span>
+          <div class="metrics">
+            <div>
+              <span>WebRTC upload / download</span
+              ><strong id="rtc-rate">—</strong> <small id="rtc-traffic">—</small
+              ><small>Total sent / received</small>
+            </div>
+            <div>
+              <span>DERP upload / download</span
+              ><strong id="derp-rate">—</strong>
+              <small id="derp-traffic">—</small
+              ><small>Total sent / received</small>
+            </div>
+            <div>
+              <span>ICE round trip</span><strong id="rtt">—</strong
+              ><small id="candidates">No selected candidate pair</small>
+            </div>
           </div>
-          <p class="caption">
-            Paste it into the address bar of a new tab. Browser internal pages
-            cannot be opened reliably by ordinary web links.
-            <a
-              href="https://webrtc.org/support/bug-reporting"
-              target="_blank"
-              rel="noreferrer"
-              >WebRTC debugging guide</a
+          <div class="toggle-row">
+            <label class="toggle"
+              ><input id="webrtc" type="checkbox" checked /> Allow WebRTC direct
+              paths</label
             >
-          </p>
-        </details>
-      </section>
+            <span class="caption"
+              >Turn off to move an active stream to DERP.</span
+            >
+          </div>
+          <p id="mode-note" class="caption" role="status"></p>
+          <details id="webrtc-debug">
+            <summary>WebRTC debugging</summary>
+            <p class="caption">
+              Open Chrome’s diagnostics in another tab before connecting. Select
+              this demo’s PeerConnection, then inspect data-channel and
+              candidate-pair statistics. Regular DevTools Network shows DERP
+              WebSockets, not WebRTC DataChannel packets.
+            </p>
+            <label for="debug-address">Chrome diagnostics address</label>
+            <input
+              id="debug-address"
+              readonly
+              value="chrome://webrtc-internals"
+            />
+            <div class="row">
+              <button id="copy-debug">Copy debug page address</button
+              ><span id="debug-status" role="status"></span>
+            </div>
+            <p class="caption">
+              Paste it into the address bar of a new tab. Browser internal pages
+              cannot be opened reliably by ordinary web links.
+              <a
+                href="https://webrtc.org/support/bug-reporting"
+                target="_blank"
+                rel="noreferrer"
+                >WebRTC debugging guide</a
+              >
+            </p>
+          </details>
+        </section>
 
-      <section class="card" aria-labelledby="exchange-heading">
-        <div class="section-head">
-          <h2 id="exchange-heading">Try the connection</h2>
-          <div class="row">
-            <button id="probe" disabled>Send 1 GB test</button>
-            <button id="cancel-probe" hidden>Stop test</button>
+        <section class="card" aria-labelledby="exchange-heading">
+          <div class="section-head">
+            <h2 id="exchange-heading">Transfer test</h2>
+            <div class="row">
+              <button id="probe" disabled>Send 1 GB test</button>
+              <button id="cancel-probe" hidden>Stop test</button>
+            </div>
           </div>
-        </div>
-        <p id="probe-status" class="caption" role="status">
-          1 GB = 1,000,000,000 bytes. Sent in small chunks and verified by the
-          receiver.
-        </p>
-        <div class="test-meters">
-          <div id="send-meter" data-state="idle">
-            <span>Send · receiver-confirmed</span>
-            <strong id="send-rate">—</strong>
-            <progress
-              id="send-progress"
-              max="1000000000"
-              value="0"
-              aria-label="Receiver-confirmed test progress"
-            ></progress>
-            <small id="send-detail">Ready to send 1 GB</small>
+          <p id="probe-status" class="caption" role="status">
+            1 GB = 1,000,000,000 bytes. Sent in small chunks and verified by the
+            receiver.
+          </p>
+          <div class="test-meters">
+            <div id="send-meter" data-state="idle">
+              <span>Send · receiver-confirmed</span>
+              <strong id="send-rate">—</strong>
+              <progress
+                id="send-progress"
+                max="1000000000"
+                value="0"
+                aria-label="Receiver-confirmed test progress"
+              ></progress>
+              <small id="send-detail">Ready to send 1 GB</small>
+            </div>
+            <div id="receive-meter" data-state="idle">
+              <span>Receive</span>
+              <strong id="receive-rate">—</strong>
+              <progress
+                id="receive-progress"
+                max="1000000000"
+                value="0"
+                aria-label="Received test progress"
+              ></progress>
+              <small id="receive-detail">Waiting for a test</small>
+            </div>
           </div>
-          <div id="receive-meter" data-state="idle">
-            <span>Receive</span>
-            <strong id="receive-rate">—</strong>
-            <progress
-              id="receive-progress"
-              max="1000000000"
-              value="0"
-              aria-label="Received test progress"
-            ></progress>
-            <small id="receive-detail">Waiting for a test</small>
+          <details class="measurement-notes">
+            <summary>How measurements work</summary>
+            <p class="caption">
+              Test speeds use received payload bytes over the last 2 seconds.
+              Transport speeds above count encrypted packets, including overhead
+              and retransmissions. Transport upload counts local sends, not
+              confirmed delivery. The final average includes streaming, payload
+              verification, and the receiver’s completion receipt.
+            </p>
+          </details>
+          <div class="conversation">
+            <h3>Messages</h3>
+            <form id="message-form" class="row message-form">
+              <label class="sr-only" for="message">Message</label>
+              <input
+                id="message"
+                placeholder="Say hello to the other browser…"
+                maxlength="2000"
+                required
+                disabled
+              />
+              <button id="send" class="primary" disabled>Send</button>
+            </form>
+            <ol
+              id="messages"
+              aria-label="Conversation"
+              aria-live="polite"
+              aria-relevant="additions"
+            ></ol>
+            <p id="empty" class="caption">
+              Messages appear here on both browsers.
+            </p>
           </div>
-        </div>
-        <p class="caption">
-          Test speeds use received payload bytes over the last 2 seconds.
-          Transport speeds above count encrypted packets, including overhead and
-          retransmissions. Transport upload counts local sends, not confirmed
-          delivery.
-        </p>
-        <form id="message-form" class="row message-form">
-          <label class="sr-only" for="message">Message</label>
-          <input
-            id="message"
-            placeholder="Say hello to the other browser…"
-            maxlength="2000"
-            required
-            disabled
-          />
-          <button id="send" class="primary" disabled>Send</button>
-        </form>
-        <ol
-          id="messages"
-          aria-label="Conversation"
-          aria-live="polite"
-          aria-relevant="additions"
-        ></ol>
-        <p id="empty" class="caption">Messages appear here on both browsers.</p>
-      </section>
+        </section>
+      </div>
 
       <footer>
-        <p>WireGuard encryption · WebRTC when available · DERP fallback</p>
-        <p class="caption">
-          Direct availability depends on both networks. Traffic counts include
-          encrypted protocol overhead. The final average includes streaming,
-          chunk verification, and the receiver’s completion receipt.
-        </p>
+        <p>TailWASM Demo · WebRTC direct · DERP fallback</p>
         <a href="./dist/THIRD_PARTY_NOTICES.txt">Third-party notices</a>
       </footer>
     </main>
@@ -757,6 +978,7 @@
         address: element("address"),
         copy: element("copy"),
         copyStatus: element("copy-status"),
+        mapPreset: element("map-preset"),
         map: element("map"),
         peer: element("peer-address"),
         connectForm: element("connect-form"),
@@ -797,8 +1019,20 @@
       let mapURL = "";
       let sentTest;
       let receivedTest;
+      const MAP_PRESETS = {
+        tailcat: "https://tailcat.dev/derpmap.json",
+        tailscale: "https://controlplane.tailscale.com/derpmap/default",
+      };
+      ui.mapPreset.addEventListener("change", () => {
+        const preset = MAP_PRESETS[ui.mapPreset.value];
+        if (preset) ui.map.value = preset;
+        render();
+      });
       const requestedMap = new URL(location.href).searchParams.get("map");
-      if (requestedMap) ui.map.value = requestedMap;
+      if (requestedMap) {
+        ui.mapPreset.value = "custom";
+        ui.map.value = requestedMap;
+      }
 
       function newTest(id) {
         const started = performance.now();
@@ -900,7 +1134,9 @@
         const listening = !!ui.address.value;
         ui.start.hidden = starting || listening;
         ui.stop.hidden = !starting && !listening;
-        ui.map.disabled = starting || listening;
+        ui.mapPreset.disabled = starting || listening;
+        ui.map.readOnly =
+          starting || listening || ui.mapPreset.value !== "custom";
         ui.local.hidden = !listening;
         ui.connect.disabled = !listening || !!link || !!dialing;
         ui.peer.disabled = !!link || !!dialing;
@@ -941,7 +1177,11 @@
             : state === "webrtc-relay"
               ? "The selected ICE pair uses a TURN relay."
               : state === "derp"
-                ? "This stream currently uses DERP. Direct availability depends on both networks and WebRTC settings."
+                ? `This stream currently uses DERP.${
+                    path?.fallbackReason
+                      ? ` Last fallback: ${path.fallbackReason}.`
+                      : ""
+                  } Direct availability depends on both networks and WebRTC settings.`
                 : "Connections start through DERP and attempt a WebRTC upgrade.";
         const trafficRate = (key) => rate(link?.rates[key]?.value);
         ui.rtcRate.textContent = `${trafficRate("txBytes")} / ${trafficRate("rxBytes")}`;

@@ -1,0 +1,56 @@
+name: Validate SDK
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  sdk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: npm run build
+      - run: git diff --exit-code -- dist
+  crypto:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: wasm/go.mod
+          cache-dependency-path: wasm/go.sum
+      - run: npm ci
+      - run: npm run test:crypto
+      - run: TEST_RACE=1 npm run test:patches
+  browser:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: wasm/go.mod
+          cache-dependency-path: wasm/go.sum
+      - run: npm ci
+      - run: npx playwright install-deps chromium
+      - run: npm run bench:setup
+      - run: npm run build
+      - run: npm run test:demo
+      - run: npm run test:transport

@@ -5,6 +5,7 @@ go 1.27.1
 replace github.com/tailscale/tailcat => ../.forks/tailcat
 
 replace tailscale.com => ../.forks/tailscale
+replace golang.org/x/crypto => ../.forks/xcrypto
 
 require (
 	github.com/tailscale/tailcat v0.7.0

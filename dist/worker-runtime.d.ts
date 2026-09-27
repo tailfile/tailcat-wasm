@@ -28,6 +28,7 @@ type Request = {
         session: number;
         kind: string;
         value?: any;
+        sequence?: number;
     };
 } | {
     method: "configure";
@@ -83,8 +84,9 @@ export interface RuntimeScope {
     };
     onTailcatReady(): void;
     onTailcatRTC(session: number, kind: string, value: unknown): void;
-    onTailcatRTCPacket(session: number, bytes: Uint8Array<ArrayBuffer>): boolean;
-    tailcatRTC(session: number, kind: string, value: unknown): void;
+    onTailcatRTCPacket(session: number, address: number, length: number): boolean;
+    tailcatRTC(session: number, kind: string, value: unknown): unknown;
+    tailcatWebRTCEnabled?: boolean;
     tailcatCreateIdentity(): Promise<TransportIdentity>;
     tailcatDescribeAddress(address: string): Promise<AddressDescription>;
     tailcatListen(options: {

@@ -1,0 +1,231 @@
+--- a/internal/poly1305/mac_noasm.go
++++ b/internal/poly1305/mac_noasm.go
+@@ -4,4 +4,4 @@
+ 
+-//go:build (!amd64 && !loong64 && !ppc64le && !ppc64 && !riscv64 && !s390x) || !gc || purego
++//go:build (!amd64 && !loong64 && !ppc64le && !ppc64 && !riscv64 && !s390x && !js) || !gc || purego
+ 
+ package poly1305
+--- a/internal/poly1305/sum_generic.go
++++ b/internal/poly1305/sum_generic.go
+@@ -3,4 +3,6 @@
+ // license that can be found in the LICENSE file.
+ 
++//go:build !js || purego
++
+ // This file provides the generic implementation of Sum and MAC. Other files
+ // might provide optimized assembly implementations of some of this code.
+--- /dev/null
++++ b/internal/poly1305/sum_js.go
+@@ -0,0 +1,211 @@
++// Copyright 2026 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++//
++// Derived from the public-domain poly1305-donna-32 implementation
++// by Andrew Moon (https://github.com/floodyberry/poly1305-donna).
++
++//go:build js && wasm && !purego
++
++// This file provides the js/wasm Poly1305 implementation. The generic
++// implementation multiplies 64-bit limbs with bits.Mul64, whose 128-bit
++// products the wasm port must emulate with several 32-bit operations. This
++// implementation keeps every product within 32x32->64 bits, which wasm
++// executes natively (i64.mul). It is a translation of the public-domain
++// poly1305-donna-32 implementation by Andrew Moon, using 26-bit limbs.
++
++package poly1305
++
++import "encoding/binary"
++
++func le(b []byte) uint32 { return binary.LittleEndian.Uint32(b) }
++
++// mac is a wrapper for macDonna, mirroring the incremental interface the
++// shared Sum, Verify and New entry points call through.
++type mac struct{ macDonna }
++
++type macDonna struct {
++	macState
++	offset int
++	buffer [TagSize]byte
++}
++
++// macState holds numbers in 26-bit little-endian limbs. The value of
++// [x0..x4] is x0 + x1*2^26 + x2*2^52 + x3*2^78 + x4*2^104.
++type macState struct {
++	r0, r1, r2, r3, r4 uint32
++	s1, s2, s3, s4     uint32
++	h0, h1, h2, h3, h4 uint32
++	pad                [4]uint32
++}
++
++func initialize(key *[32]byte, m *macState) {
++	// r &= 0xffffffc0ffffffc0ffffffc0fffffff
++	m.r0 = le(key[0:4]) & 0x3ffffff
++	m.r1 = (le(key[3:7]) >> 2) & 0x3ffff03
++	m.r2 = (le(key[6:10]) >> 4) & 0x3ffc0ff
++	m.r3 = (le(key[9:13]) >> 6) & 0x3f03fff
++	m.r4 = (le(key[12:16]) >> 8) & 0x00fffff
++	// Precompute 5*r limbs to fold the radix reduction into the multiply.
++	m.s1 = m.r1 * 5
++	m.s2 = m.r2 * 5
++	m.s3 = m.r3 * 5
++	m.s4 = m.r4 * 5
++	m.pad = [4]uint32{
++		le(key[16:20]),
++		le(key[20:24]),
++		le(key[24:28]),
++		le(key[28:32]),
++	}
++}
++
++// blocks absorbs whole 16-byte blocks. final marks the padded last block,
++// which is the only one without the 2^128 marker bit.
++func (m *macState) blocks(msg []byte, final bool) {
++	hibit := uint32(0)
++	if !final {
++		hibit = 1 << 24 // 1 << 128
++	}
++	for len(msg) >= TagSize {
++		h0 := m.h0 + le(msg[0:4])&0x3ffffff
++		h1 := m.h1 + (le(msg[3:7])>>2)&0x3ffffff
++		h2 := m.h2 + (le(msg[6:10])>>4)&0x3ffffff
++		h3 := m.h3 + (le(msg[9:13])>>6)&0x3ffffff
++		h4 := m.h4 + ((le(msg[12:16]) >> 8) | hibit)
++
++		// h *= r, with 5*r limbs precomputed to fold the radix reduction.
++		d0 := uint64(h0)*uint64(m.r0) + uint64(h1)*uint64(m.s4) + uint64(h2)*uint64(m.s3) + uint64(h3)*uint64(m.s2) + uint64(h4)*uint64(m.s1)
++		d1 := uint64(h0)*uint64(m.r1) + uint64(h1)*uint64(m.r0) + uint64(h2)*uint64(m.s4) + uint64(h3)*uint64(m.s3) + uint64(h4)*uint64(m.s2)
++		d2 := uint64(h0)*uint64(m.r2) + uint64(h1)*uint64(m.r1) + uint64(h2)*uint64(m.r0) + uint64(h3)*uint64(m.s4) + uint64(h4)*uint64(m.s3)
++		d3 := uint64(h0)*uint64(m.r3) + uint64(h1)*uint64(m.r2) + uint64(h2)*uint64(m.r1) + uint64(h3)*uint64(m.r0) + uint64(h4)*uint64(m.s4)
++		d4 := uint64(h0)*uint64(m.r4) + uint64(h1)*uint64(m.r3) + uint64(h2)*uint64(m.r2) + uint64(h3)*uint64(m.r1) + uint64(h4)*uint64(m.r0)
++
++		// (partial) h %= p.
++		var c uint32
++		c = uint32(d0 >> 26)
++		m.h0 = uint32(d0) & 0x3ffffff
++		d1 += uint64(c)
++		c = uint32(d1 >> 26)
++		m.h1 = uint32(d1) & 0x3ffffff
++		d2 += uint64(c)
++		c = uint32(d2 >> 26)
++		m.h2 = uint32(d2) & 0x3ffffff
++		d3 += uint64(c)
++		c = uint32(d3 >> 26)
++		m.h3 = uint32(d3) & 0x3ffffff
++		d4 += uint64(c)
++		c = uint32(d4 >> 26)
++		m.h4 = uint32(d4) & 0x3ffffff
++		m.h0 += c * 5
++		c = m.h0 >> 26
++		m.h0 &= 0x3ffffff
++		m.h1 += c
++		msg = msg[TagSize:]
++	}
++}
++
++// finalize carries h, reduces it modulo 2^130-5, packs it modulo 2^128 and
++// adds the padded key to produce the tag.
++func (m *macState) finalize(out *[TagSize]byte) {
++	// Fully carry h.
++	h0, h1, h2, h3, h4 := m.h0, m.h1, m.h2, m.h3, m.h4
++	c := h1 >> 26
++	h1 &= 0x3ffffff
++	h2 += c
++	c = h2 >> 26
++	h2 &= 0x3ffffff
++	h3 += c
++	c = h3 >> 26
++	h3 &= 0x3ffffff
++	h4 += c
++	c = h4 >> 26
++	h4 &= 0x3ffffff
++	h0 += c * 5
++	c = h0 >> 26
++	h0 &= 0x3ffffff
++	h1 += c
++	// Compute h + -p.
++	g0 := h0 + 5
++	c = g0 >> 26
++	g0 &= 0x3ffffff
++	g1 := h1 + c
++	c = g1 >> 26
++	g1 &= 0x3ffffff
++	g2 := h2 + c
++	c = g2 >> 26
++	g2 &= 0x3ffffff
++	g3 := h3 + c
++	c = g3 >> 26
++	g3 &= 0x3ffffff
++	g4 := h4 + c - (1 << 26)
++	// Select h if h < p, or h + -p if h >= p.
++	mask := uint32((g4 >> 31) - 1)
++	g0 &= mask
++	g1 &= mask
++	g2 &= mask
++	g3 &= mask
++	g4 &= mask
++	mask = ^mask
++	h0 = (h0 & mask) | g0
++	h1 = (h1 & mask) | g1
++	h2 = (h2 & mask) | g2
++	h3 = (h3 & mask) | g3
++	h4 = (h4 & mask) | g4
++	// h = h % (2^128).
++	h0 = (h0 | h1<<26) & 0xffffffff
++	h1 = (h1>>6 | h2<<20) & 0xffffffff
++	h2 = (h2>>12 | h3<<14) & 0xffffffff
++	h3 = (h3>>18 | h4<<8) & 0xffffffff
++	// mac = (h + pad) % (2^128).
++	f := uint64(h0) + uint64(m.pad[0])
++	h0 = uint32(f)
++	f = uint64(h1) + uint64(m.pad[1]) + f>>32
++	h1 = uint32(f)
++	f = uint64(h2) + uint64(m.pad[2]) + f>>32
++	h2 = uint32(f)
++	f = uint64(h3) + uint64(m.pad[3]) + f>>32
++	h3 = uint32(f)
++	put := func(o uint32, p []byte) {
++		p[0] = byte(o)
++		p[1] = byte(o >> 8)
++		p[2] = byte(o >> 16)
++		p[3] = byte(o >> 24)
++	}
++	put(h0, out[0:4])
++	put(h1, out[4:8])
++	put(h2, out[8:12])
++	put(h3, out[12:16])
++}
++
++func (h *macDonna) Write(p []byte) (int, error) {
++	nn := len(p)
++	if h.offset > 0 {
++		n := copy(h.buffer[h.offset:], p)
++		if h.offset+n < TagSize {
++			h.offset += n
++			return nn, nil
++		}
++		p = p[n:]
++		h.offset = 0
++		h.macState.blocks(h.buffer[:TagSize], false)
++	}
++	if n := len(p) - (len(p) % TagSize); n > 0 {
++		h.macState.blocks(p[:n], false)
++		p = p[n:]
++	}
++	if len(p) > 0 {
++		h.offset += copy(h.buffer[h.offset:], p)
++	}
++	return nn, nil
++}
++
++func (h *macDonna) Sum(out *[TagSize]byte) {
++	state := h.macState
++	if h.offset > 0 {
++		var buf [TagSize]byte
++		copy(buf[:], h.buffer[:h.offset])
++		buf[h.offset] = 1
++		state.blocks(buf[:TagSize], true)
++	}
++	state.finalize(out)
++}

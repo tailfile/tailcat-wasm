@@ -17,5 +17,5 @@ export async function createTailcat(options) {
         },
     }, options, mtu, typeof RTCPeerConnection === "undefined"
         ? undefined
-        : createWebRTC(options.webRTC || {}, (message, transfer) => worker.postMessage(message, transfer ?? []), options.webRTC !== false));
+        : createWebRTC(options.webRTC || {}, (message, transfer) => worker.postMessage(message, transfer ?? []), options.webRTC !== false, mtu));
 }

@@ -1,0 +1,14 @@
+{
+  "github.com/tailscale/tailcat": {
+    "version": "v0.7.0",
+    "commit": "15ab9e68bfc6534a61797d7af28cedd42b54a3a5"
+  },
+  "tailscale.com": {
+    "version": "v1.103.0-pre.0.20260916030321-a2263542f260",
+    "commit": "a2263542f260e73260e821a2d1b81475c35b0766"
+  },
+  "golang.org/x/crypto": {
+    "version": "v0.57.0",
+    "commit": "3f62bf119e84c6e35e8518a2958089ade622d1a3"
+  }
+}

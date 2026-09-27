@@ -264,16 +264,29 @@ func tailcatDial(this js.Value, args []js.Value) any {
 // pingUntil retries the meow/meowed handshake until it succeeds or
 // ctx expires. The first pings can be lost while either side's DERP
 // connection is still coming up.
-func pingUntil(ctx context.Context, cl *tailcat.Client) error {
+type pinger interface {
+	Ping(context.Context) (tailcat.PingResult, error)
+}
+
+func pingUntil(ctx context.Context, cl pinger) error {
 	for {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("ping: %w", err)
+		}
 		pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		_, err := cl.Ping(pctx)
 		cancel()
 		if err == nil {
 			return nil
 		}
-		if ctx.Err() != nil {
-			return fmt.Errorf("ping: %w", err)
+		// Startup failures can be immediate (for example a failed relay-map
+		// fetch). Bound retries instead of spinning until the outer deadline.
+		timer := time.NewTimer(200 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("ping: %w", ctx.Err())
+		case <-timer.C:
 		}
 	}
 }
@@ -296,6 +309,7 @@ func makeJSConn(c net.Conn, port uint16, peerNodeKey string, owner packetPathOwn
 	var peer key.NodePublic
 	peer.UnmarshalText([]byte(peerNodeKey))
 	buf := make([]byte, 64<<10)
+	uint8Array := js.Global().Get("Uint8Array")
 	var callbacks []js.Func
 	bind := func(handler func(js.Value, []js.Value) any) js.Func {
 		callback := js.FuncOf(handler)
@@ -313,7 +327,7 @@ func makeJSConn(c net.Conn, port uint16, peerNodeKey string, owner packetPathOwn
 			return makePromise(func() (any, error) {
 				n, err := c.Read(buf)
 				if n > 0 {
-					u8 := js.Global().Get("Uint8Array").New(n)
+					u8 := uint8Array.New(n)
 					js.CopyBytesToJS(u8, buf[:n])
 					return u8, nil
 				}
